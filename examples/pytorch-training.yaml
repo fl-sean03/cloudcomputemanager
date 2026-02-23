@@ -1,0 +1,68 @@
+# Example PyTorch training job configuration
+# Submit with: vm submit examples/pytorch-training.yaml
+
+name: pytorch-training
+project: ml-experiments
+
+# PyTorch image
+image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+# Training command
+command: |
+  cd /workspace
+
+  # Check for checkpoint
+  CHECKPOINT=$(ls -t checkpoints/model_*.pt 2>/dev/null | head -1)
+
+  if [ -n "$CHECKPOINT" ]; then
+      echo "Resuming from: $CHECKPOINT"
+      python train.py --resume $CHECKPOINT
+  else
+      echo "Starting fresh training"
+      python train.py
+  fi
+
+# Resource requirements
+resources:
+  gpu_type: RTX_4090
+  gpu_count: 1
+  gpu_memory_min: 24
+  cpu_cores: 8
+  memory_gb: 32
+  disk_gb: 100
+
+# Checkpoint configuration
+checkpoint:
+  strategy: file_pattern
+  path: /workspace/checkpoints
+  interval_minutes: 15
+  patterns:
+    - "model_*.pt"
+    - "*.pth"
+    - "checkpoint_*.pt"
+
+# Sync configuration
+sync:
+  enabled: true
+  source: /workspace/outputs
+  destination: ~/cloudcomputemanager_sync/pytorch/
+  interval_minutes: 10
+  include_patterns:
+    - "*.log"
+    - "*.json"
+    - "tensorboard/*"
+
+# Budget
+budget:
+  max_cost_usd: 100.00
+  max_hours: 24
+
+# Retry
+retry:
+  max_attempts: 5
+  backoff_minutes: 2
+
+tags:
+  - pytorch
+  - training
+  - ml

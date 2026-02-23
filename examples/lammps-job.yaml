@@ -1,0 +1,97 @@
+# Example LAMMPS job configuration for CloudComputeManager
+# Submit with: vm submit examples/lammps-job.yaml
+
+name: lammps-mxene-simulation
+project: mxenes-study
+
+# Docker image with LAMMPS
+image: lammps/lammps:stable_29Aug2024_update1
+
+# Command to run
+# Uses restart file if available, otherwise starts fresh
+command: |
+  cd /workspace
+
+  # Check for restart file
+  RESTART=$(ls -t restart.*.bin 2>/dev/null | head -1)
+
+  if [ -n "$RESTART" ]; then
+      echo "Resuming from checkpoint: $RESTART"
+      mpirun -np 4 lmp -in simulation.in -var restart_file $RESTART
+  else
+      echo "Starting fresh simulation"
+      mpirun -np 4 lmp -in simulation.in -var restart_file none
+  fi
+
+# Resource requirements
+resources:
+  gpu_type: RTX_4090
+  gpu_count: 1
+  gpu_memory_min: 16
+  cpu_cores: 8
+  memory_gb: 64
+  disk_gb: 100
+
+# Checkpoint configuration
+checkpoint:
+  # Strategy: application (LAMMPS handles its own restarts)
+  strategy: application
+
+  # Where to look for checkpoints
+  path: /workspace
+
+  # Check for new checkpoints every 30 minutes
+  interval_minutes: 30
+
+  # File patterns to include in checkpoint
+  patterns:
+    - "restart.*.bin"
+    - "*.restart"
+
+# Continuous sync configuration
+sync:
+  enabled: true
+
+  # Source directory on instance
+  source: /workspace/results
+
+  # Destination (local path or s3://)
+  destination: ~/cloudcomputemanager_sync/mxenes/
+
+  # Sync every 15 minutes
+  interval_minutes: 15
+
+  # Files to include
+  include_patterns:
+    - "*.dump"
+    - "*.log"
+    - "thermo.dat"
+    - "*.out"
+
+  # Files to exclude
+  exclude_patterns:
+    - "*.tmp"
+    - "*.temp"
+
+# Budget constraints
+budget:
+  max_cost_usd: 50.00
+  max_hours: 48
+  max_hourly_rate: 0.60
+
+# Retry policy
+retry:
+  max_attempts: 10
+  backoff_minutes: 5
+
+  # Exit codes that trigger recovery (not failure)
+  recover_on_exit_codes:
+    - 42  # Custom checkpoint signal
+
+# Metadata
+tags:
+  - lammps
+  - mxenes
+  - equilibration
+
+priority: normal
