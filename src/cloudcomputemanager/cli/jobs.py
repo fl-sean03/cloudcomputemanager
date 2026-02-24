@@ -40,6 +40,7 @@ async def submit_job(
     checkpoint_config = config.get("checkpoint", {})
     sync_config = config.get("sync", {})
     budget = config.get("budget", {})
+    upload_config = config.get("upload", {})
 
     # Initialize database
     await init_db()
@@ -79,14 +80,50 @@ async def submit_job(
     console.print(f"  SSH: ssh -p {instance.ssh_port} {instance.ssh_user}@{instance.ssh_host}")
 
     # Wait for instance to be ready
-    with console.status("Waiting for instance to be ready..."):
-        ready = await provider.wait_for_ready(instance.instance_id, timeout=300)
+    timeout = resources.get("startup_timeout", 300)
+    with console.status(f"Waiting for instance to be ready (timeout: {timeout}s)..."):
+        ready = await provider.wait_for_ready(instance.instance_id, timeout=timeout)
 
     if not ready:
-        console.print("[red]Instance failed to start![/red]")
+        console.print(f"[red]Instance {instance.instance_id} failed to start within {timeout}s![/red]")
+        console.print("[yellow]Destroying instance to prevent charges...[/yellow]")
+        try:
+            await provider.terminate_instance(instance.instance_id)
+            console.print("[green]Instance destroyed successfully.[/green]")
+        except Exception as e:
+            console.print(f"[red]Failed to destroy instance: {e}[/red]")
+            console.print(f"[yellow]Manually destroy with: vastai destroy instance {instance.instance_id}[/yellow]")
         return
 
     console.print("[green]Instance is ready![/green]")
+
+    # Upload files if configured
+    if upload_config.get("source"):
+        source_path = Path(upload_config["source"]).expanduser()
+        dest_path = upload_config.get("destination", "/workspace")
+
+        if not source_path.exists():
+            console.print(f"[red]Upload source not found: {source_path}[/red]")
+            console.print("[yellow]Destroying instance...[/yellow]")
+            await provider.terminate_instance(instance.instance_id)
+            return
+
+        console.print(f"\n[bold]Uploading files:[/bold] {source_path} -> {dest_path}")
+        with console.status("Uploading files..."):
+            upload_success = await provider.rsync_upload(
+                instance.instance_id,
+                str(source_path) + "/",
+                dest_path + "/",
+                exclude=upload_config.get("exclude", []),
+            )
+
+        if not upload_success:
+            console.print("[red]File upload failed![/red]")
+            console.print("[yellow]Destroying instance...[/yellow]")
+            await provider.terminate_instance(instance.instance_id)
+            return
+
+        console.print("[green]Files uploaded successfully![/green]")
 
     # Create job record
     import json
