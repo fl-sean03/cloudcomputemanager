@@ -1,0 +1,47 @@
+# LLM Inference Template
+# For running LLM inference with vLLM or text-generation-inference
+# Designed for high-VRAM GPUs
+#
+# Usage:
+#   ccm submit --template llm-inference job.yaml
+
+name: llm-inference
+
+image: vllm/vllm-openai:latest
+
+resources:
+  gpu_type: RTX_4090
+  gpu_count: 1
+  gpu_memory_min: 24
+  disk_gb: 200  # Large disk for model weights
+
+budget:
+  max_hourly_rate: 0.80
+
+upload:
+  destination: /workspace
+  exclude:
+    - "__pycache__"
+    - ".git"
+    - ".venv"
+    - "*.bin"
+    - "*.safetensors"
+
+sync:
+  enabled: true
+  interval: 300
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "*.json"
+    - "*.log"
+    - "outputs/"
+  exclude_patterns:
+    - "*.bin"
+    - "*.safetensors"
+    - "model_cache/"
+
+checkpoint:
+  enabled: false  # Inference doesn't need checkpoints
+
+terminate_on_complete: true

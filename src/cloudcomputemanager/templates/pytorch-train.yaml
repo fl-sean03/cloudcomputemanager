@@ -1,0 +1,63 @@
+# PyTorch Training Template
+# For deep learning training with checkpoint support
+#
+# Usage:
+#   ccm submit --template pytorch-train job.yaml
+#
+# job.yaml should override at minimum:
+#   - name: your_job_name
+#   - upload.source: ./your_project_dir/
+#   - command: python train.py
+
+name: pytorch-train
+
+image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+resources:
+  gpu_type: RTX_4090
+  gpu_count: 1
+  gpu_memory_min: 24
+  disk_gb: 100
+
+budget:
+  max_hourly_rate: 0.50
+
+upload:
+  destination: /workspace
+  exclude:
+    - "*.pt"
+    - "*.pth"
+    - "checkpoints/"
+    - "wandb/"
+    - "__pycache__"
+    - ".git"
+    - ".venv"
+    - "venv/"
+    - "data/*.tar"
+    - "data/*.gz"
+
+sync:
+  enabled: true
+  interval: 300  # 5 minutes - more frequent for training
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "checkpoints/*.pt"
+    - "checkpoints/*.pth"
+    - "*.log"
+    - "metrics.json"
+    - "wandb/"
+  exclude_patterns:
+    - "*.pyc"
+    - "__pycache__"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "checkpoints/*.pt"
+    - "checkpoints/*.pth"
+    - "checkpoint.pt"
+    - "model_*.pt"
+  interval: 300
+
+terminate_on_complete: true

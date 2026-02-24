@@ -1,0 +1,54 @@
+# Jupyter Development Environment Template
+# For interactive development with Jupyter Lab
+# Instance stays running until manually terminated
+#
+# Usage:
+#   ccm submit --template jupyter-dev job.yaml
+#
+# After starting, access via:
+#   ccm logs <job_id>  # Shows Jupyter URL with token
+
+name: jupyter-dev
+
+image: jupyter/pytorch-notebook:latest
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 50
+
+budget:
+  max_hourly_rate: 0.15
+
+command: |
+  jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+
+upload:
+  destination: /workspace
+  exclude:
+    - "__pycache__"
+    - ".git"
+    - ".venv"
+    - "venv/"
+    - "*.pyc"
+    - ".ipynb_checkpoints"
+
+sync:
+  enabled: true
+  interval: 300
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "*.ipynb"
+    - "*.py"
+    - "*.csv"
+    - "*.json"
+  exclude_patterns:
+    - ".ipynb_checkpoints"
+    - "__pycache__"
+
+checkpoint:
+  enabled: false
+
+terminate_on_complete: false  # Keep running for development

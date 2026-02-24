@@ -63,14 +63,26 @@ def jobs_submit(
     name: Optional[str] = typer.Option(
         None, "--name", "-n", help="Override job name"
     ),
+    template: Optional[str] = typer.Option(
+        None, "--template", "-t", help="Use a built-in template as base"
+    ),
     wait: bool = typer.Option(
         False, "--wait", "-w", help="Wait for job completion"
     ),
 ):
-    """Submit a new job from a YAML configuration file."""
+    """Submit a new job from a YAML configuration file.
+
+    Templates provide defaults for image, resources, checkpoint, and sync settings.
+    Your config file overrides template values.
+
+    Examples:
+        ccm jobs submit job.yaml
+        ccm jobs submit job.yaml --template namd-production
+        ccm jobs submit job.yaml --template pytorch-train --wait
+    """
     from cloudcomputemanager.cli.jobs import submit_job
 
-    asyncio.run(submit_job(config_file, name, wait))
+    asyncio.run(submit_job(config_file, name, wait, template))
 
 
 @jobs_app.command("list")
@@ -485,6 +497,99 @@ def config_init():
 
 
 # ============================================================================
+# Templates Commands
+# ============================================================================
+
+templates_app = typer.Typer(help="Manage job templates")
+app.add_typer(templates_app, name="templates")
+
+
+@templates_app.command("list")
+def templates_list():
+    """List available job templates.
+
+    Templates provide pre-configured settings for common workloads
+    like NAMD, LAMMPS, PyTorch training, etc.
+
+    Examples:
+        ccm templates list
+    """
+    from cloudcomputemanager.core.templates import get_available_templates
+
+    table = Table(title="Available Job Templates")
+    table.add_column("Name", style="cyan")
+    table.add_column("Image", style="dim")
+    table.add_column("GPU", style="green")
+    table.add_column("Max Rate", style="yellow")
+    table.add_column("Checkpoint", style="blue")
+
+    for t in get_available_templates():
+        ckpt = "✓" if t["checkpoint"] else ""
+        rate = f"${t['max_rate']:.2f}/hr" if isinstance(t["max_rate"], (int, float)) else t["max_rate"]
+        table.add_row(t["name"], t["image"][:40], t["gpu_type"], rate, ckpt)
+
+    console.print(table)
+    console.print("\n[dim]Use 'ccm templates show <name>' for details[/dim]")
+
+
+@templates_app.command("show")
+def templates_show(
+    name: str = typer.Argument(..., help="Template name"),
+):
+    """Show template details.
+
+    Examples:
+        ccm templates show namd-production
+        ccm templates show pytorch-train
+    """
+    from cloudcomputemanager.core.templates import load_template
+    import yaml
+
+    try:
+        template = load_template(name)
+    except FileNotFoundError:
+        console.print(f"[red]Template not found: {name}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel(
+        yaml.dump(template, default_flow_style=False, sort_keys=False),
+        title=f"Template: {name}",
+        border_style="cyan",
+    ))
+
+
+@templates_app.command("generate")
+def templates_generate(
+    name: str = typer.Argument(..., help="Template name"),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Output file (stdout if not specified)"
+    ),
+):
+    """Generate a minimal job config using a template.
+
+    This creates a YAML file with only the fields you need to customize
+    when using the specified template.
+
+    Examples:
+        ccm templates generate namd-production
+        ccm templates generate pytorch-train -o my-training-job.yaml
+    """
+    from cloudcomputemanager.core.templates import generate_minimal_config
+
+    try:
+        config = generate_minimal_config(name)
+    except FileNotFoundError:
+        console.print(f"[red]Template not found: {name}[/red]")
+        raise typer.Exit(1)
+
+    if output:
+        output.write_text(config)
+        console.print(f"[green]Generated config: {output}[/green]")
+    else:
+        console.print(config)
+
+
+# ============================================================================
 # Quick Commands (top-level shortcuts)
 # ============================================================================
 
@@ -492,11 +597,78 @@ def config_init():
 @app.command("submit")
 def quick_submit(
     config_file: Path = typer.Argument(..., help="Job configuration file"),
+    template: Optional[str] = typer.Option(
+        None, "--template", "-t", help="Use a built-in template as base"
+    ),
 ):
     """Quick submit: Submit a job from YAML config."""
     from cloudcomputemanager.cli.jobs import submit_job
 
-    asyncio.run(submit_job(config_file, None, False))
+    asyncio.run(submit_job(config_file, None, False, template))
+
+
+@app.command("run")
+def quick_run(
+    command: str = typer.Argument(..., help="Command to run"),
+    template: str = typer.Option(
+        "quick-gpu", "--template", "-t", help="Template to use"
+    ),
+    gpu: str = typer.Option(
+        "RTX_3060", "--gpu", "-g", help="GPU type"
+    ),
+    upload: Optional[Path] = typer.Option(
+        None, "--upload", "-u", help="Local directory to upload"
+    ),
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n", help="Job name"
+    ),
+    wait: bool = typer.Option(
+        False, "--wait", "-w", help="Wait for completion"
+    ),
+):
+    """Run a quick GPU job with minimal config.
+
+    This is the simplest way to run something on a GPU. Uses the
+    quick-gpu template by default.
+
+    Examples:
+        ccm run "python train.py"
+        ccm run "bash run.sh" --upload ./project --gpu RTX_4090
+        ccm run "namd3 production.namd" --template namd-production --wait
+    """
+    from cloudcomputemanager.core.templates import create_job_config_from_template
+    from cloudcomputemanager.cli.jobs import submit_job
+    import tempfile
+    import yaml
+
+    # Generate job name if not provided
+    if not name:
+        import hashlib
+        from datetime import datetime
+        name = f"run-{datetime.now().strftime('%H%M%S')}"
+
+    # Create config from template
+    overrides = {
+        "resources": {"gpu_type": gpu}
+    }
+
+    config = create_job_config_from_template(
+        template_name=template,
+        name=name,
+        command=command,
+        upload_source=str(upload) if upload else None,
+        overrides=overrides,
+    )
+
+    # Write to temp file and submit
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        yaml.dump(config, f)
+        temp_path = Path(f.name)
+
+    try:
+        asyncio.run(submit_job(temp_path, None, wait))
+    finally:
+        temp_path.unlink()
 
 
 @app.command("status")

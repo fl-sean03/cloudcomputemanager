@@ -1,0 +1,59 @@
+# NAMD Production Simulation Template
+# For molecular dynamics production runs with checkpointing
+#
+# Usage:
+#   ccm submit --template namd-production job.yaml
+#
+# job.yaml should override at minimum:
+#   - name: your_job_name
+#   - upload.source: ./your_simulation_dir/
+#   - command: namd3 +p8 +devices 0 your_config.namd
+
+name: namd-production
+
+image: nvcr.io/hpc/namd:3.0.1
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 12
+  disk_gb: 30
+
+budget:
+  max_hourly_rate: 0.10
+
+upload:
+  destination: /workspace
+  exclude:
+    - "*.dcd"
+    - "*.vel"
+    - "*.xsc"
+    - "__pycache__"
+    - ".git"
+
+sync:
+  enabled: true
+  interval: 600  # 10 minutes
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "*.dcd"
+    - "*.log"
+    - "*.restart.*"
+    - "*.coor"
+    - "*.vel"
+    - "*.xsc"
+  exclude_patterns:
+    - "*.psf"
+    - "*.pdb"
+    - "*.prm"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "*.restart.coor"
+    - "*.restart.vel"
+    - "*.restart.xsc"
+  interval: 600  # Match sync interval
+
+terminate_on_complete: true

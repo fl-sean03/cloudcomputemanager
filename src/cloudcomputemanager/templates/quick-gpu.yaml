@@ -1,0 +1,44 @@
+# Quick GPU Job Template
+# For short jobs that don't need checkpointing
+# Good for testing, inference, or quick experiments
+#
+# Usage:
+#   ccm submit --template quick-gpu job.yaml
+#   ccm run --template quick-gpu ./script.sh
+
+name: quick-gpu
+
+image: nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 20
+
+budget:
+  max_hourly_rate: 0.08
+
+upload:
+  destination: /workspace
+  exclude:
+    - "__pycache__"
+    - ".git"
+    - ".venv"
+    - "venv/"
+    - "node_modules/"
+    - "*.pyc"
+
+sync:
+  enabled: true
+  interval: 60  # Frequent sync for short jobs
+  source: /workspace
+  destination: ./results
+  exclude_patterns:
+    - "*.pyc"
+    - "__pycache__"
+
+checkpoint:
+  enabled: false  # No checkpointing for quick jobs
+
+terminate_on_complete: true

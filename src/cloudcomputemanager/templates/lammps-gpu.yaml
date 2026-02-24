@@ -1,0 +1,56 @@
+# LAMMPS GPU Simulation Template
+# For GPU-accelerated molecular dynamics with checkpointing
+#
+# Usage:
+#   ccm submit --template lammps-gpu job.yaml
+#
+# job.yaml should override at minimum:
+#   - name: your_job_name
+#   - upload.source: ./your_simulation_dir/
+#   - command: lmp -in your_input.in -sf gpu -pk gpu 1
+
+name: lammps-gpu
+
+image: nvcr.io/nvidia/lammps:stable
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 12
+  disk_gb: 30
+
+budget:
+  max_hourly_rate: 0.10
+
+upload:
+  destination: /workspace
+  exclude:
+    - "*.dump"
+    - "*.lammpstrj"
+    - "__pycache__"
+    - ".git"
+
+sync:
+  enabled: true
+  interval: 600
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "*.log"
+    - "*.dump"
+    - "*.restart.*"
+    - "*.lammpstrj"
+    - "*.data"
+  exclude_patterns:
+    - "*.in"
+    - "*.txt"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "restart.*"
+    - "*.restart"
+    - "*.restart.bin"
+  interval: 600
+
+terminate_on_complete: true

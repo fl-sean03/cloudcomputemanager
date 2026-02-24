@@ -113,11 +113,26 @@ async def submit_job(
     config_file: Path,
     name_override: Optional[str],
     wait: bool,
+    template_name: Optional[str] = None,
 ) -> None:
-    """Submit a job from a YAML configuration file."""
-    # Load configuration
-    with open(config_file) as f:
-        config = yaml.safe_load(f)
+    """Submit a job from a YAML configuration file.
+
+    Args:
+        config_file: Path to job configuration YAML
+        name_override: Optional name to override config
+        wait: Whether to wait for job completion
+        template_name: Optional template to use as base config
+    """
+    from cloudcomputemanager.core.templates import load_config_with_template, validate_job_config
+
+    # Load configuration (with optional template merging)
+    config = load_config_with_template(config_file, template_name)
+
+    # Validate configuration
+    errors = validate_job_config(config)
+    if errors and not config.get("command"):
+        # Allow missing command if we just want to inspect config
+        pass
 
     job_name = name_override or config.get("name", config_file.stem)
 
