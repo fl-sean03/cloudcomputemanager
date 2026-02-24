@@ -152,16 +152,31 @@ async def submit_job(
     # Start the job
     if command:
         console.print("\n[bold]Starting job...[/bold]")
-        # Run command in background using nohup
-        bg_cmd = f'cd /workspace && nohup {command} > /workspace/job.log 2>&1 &'
+
+        # For multi-line commands, write to a script file and execute it
+        import base64
+        script_content = f"#!/bin/bash\nset -e\n{command}"
+        script_b64 = base64.b64encode(script_content.encode()).decode()
+
+        # Write script, make executable, and run in background
+        setup_cmd = f"echo {script_b64} | base64 -d > /workspace/run_job.sh && chmod +x /workspace/run_job.sh"
         exit_code, stdout, stderr = await provider.execute_command(
-            instance.instance_id, bg_cmd
+            instance.instance_id, setup_cmd
         )
 
-        if exit_code == 0:
-            console.print("[green]Job started in background[/green]")
+        if exit_code != 0:
+            console.print(f"[red]Failed to create job script: {stderr}[/red]")
         else:
-            console.print(f"[red]Failed to start job: {stderr}[/red]")
+            # Run the script in background
+            run_cmd = "cd /workspace && nohup bash /workspace/run_job.sh > /workspace/job.log 2>&1 &"
+            exit_code, stdout, stderr = await provider.execute_command(
+                instance.instance_id, run_cmd
+            )
+
+            if exit_code == 0:
+                console.print("[green]Job started in background[/green]")
+            else:
+                console.print(f"[red]Failed to start job: {stderr}[/red]")
 
     # Show sync info
     if sync_config.get("enabled", True):
