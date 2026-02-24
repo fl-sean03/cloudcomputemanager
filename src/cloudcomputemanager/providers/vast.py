@@ -250,12 +250,16 @@ class VastProvider(CloudProvider):
         status = status_map.get(vast_status, ProviderStatus.PENDING)
 
         # Get SSH info
+        # Note: ssh_host + ssh_port are for the SSH proxy (sshX.vast.ai:port)
+        # The ports mapping is for direct connections to the host IP
+        # When using SSH proxy (which is the default), use ssh_host + ssh_port
         ssh_host = data.get("ssh_host", "")
         ssh_port = data.get("ssh_port", 22)
 
-        # Handle port mapping format
+        # Only use port mapping if not using SSH proxy (i.e., direct connection)
+        # SSH proxy hosts look like "sshX.vast.ai"
         ports = data.get("ports", {})
-        if ports and "22/tcp" in ports:
+        if not ssh_host.endswith(".vast.ai") and ports and "22/tcp" in ports:
             port_info = ports["22/tcp"]
             if isinstance(port_info, list) and port_info:
                 ssh_port = int(port_info[0].get("HostPort", ssh_port))
