@@ -238,7 +238,8 @@ class VastProvider(CloudProvider):
     def _parse_instance(self, data: dict) -> ProviderInstance:
         """Parse instance data from Vast.ai API."""
         # Map status
-        vast_status = data.get("actual_status", "unknown").lower()
+        # Handle None value (API can return null for actual_status)
+        vast_status = (data.get("actual_status") or "unknown").lower()
         status_map = {
             "loading": ProviderStatus.STARTING,
             "running": ProviderStatus.RUNNING,
