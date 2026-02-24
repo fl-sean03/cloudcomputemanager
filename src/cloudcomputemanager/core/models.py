@@ -260,6 +260,22 @@ class Job(SQLModel, table=True):
         """Parse tags from JSON."""
         return _json.loads(self.tags_json)
 
+    @property
+    def resources(self) -> dict:
+        """Get resources as dictionary."""
+        return _json.loads(self.resources_json)
+
+    @property
+    def budget(self) -> dict:
+        """Get budget as dictionary."""
+        return _json.loads(self.budget_json)
+
+    @property
+    def sync_config(self) -> Optional[dict]:
+        """Get sync config as dictionary."""
+        data = _json.loads(self.sync_json)
+        return data if data else None
+
 
 class Instance(SQLModel, table=True):
     """A GPU instance managed by CloudComputeManager."""
