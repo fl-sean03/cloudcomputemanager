@@ -89,7 +89,7 @@ class JobMonitor:
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
             except Exception as e:
-                logger.error("Event handler error", error=str(e), event=event.event_type)
+                logger.error("Event handler error", error=str(e), event_type=event.event_type.value)
 
     async def check_job_completion(self, instance_id: str) -> tuple[bool, Optional[int]]:
         """Check if a job has completed by looking for exit code file."""
