@@ -186,21 +186,16 @@ class VastProvider(CloudProvider):
         ]
 
         if ssh_public_key:
+            # Use --ssh for Vast.ai managed SSH key setup (uses registered SSH keys)
             args.extend(["--ssh", "--direct"])
 
         # Build onstart script
+        # Note: SSH key setup is handled by Vast.ai via --ssh flag and registered keys
+        # We don't need to add the key via onstart script
         onstart_parts = [
             "touch ~/.no_auto_tmux",
             f'echo "{self._api_key}" > ~/.vast_api_key',
         ]
-
-        if ssh_public_key:
-            onstart_parts.extend([
-                "mkdir -p ~/.ssh",
-                f'echo "{ssh_public_key}" >> ~/.ssh/authorized_keys',
-                "chmod 700 ~/.ssh",
-                "chmod 600 ~/.ssh/authorized_keys",
-            ])
 
         if env_vars:
             for key, value in env_vars.items():

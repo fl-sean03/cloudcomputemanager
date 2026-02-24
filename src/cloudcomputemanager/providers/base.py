@@ -243,9 +243,10 @@ class CloudProvider(ABC):
             True if instance is ready, False if timeout
         """
         import asyncio
+        import time
 
-        elapsed = 0
-        while elapsed < timeout:
+        start_time = time.monotonic()
+        while (time.monotonic() - start_time) < timeout:
             instance = await self.get_instance(instance_id)
             if instance and instance.status == ProviderStatus.RUNNING:
                 # Verify SSH access
@@ -256,5 +257,4 @@ class CloudProvider(ABC):
                 except Exception:
                     pass
             await asyncio.sleep(interval)
-            elapsed += interval
         return False
