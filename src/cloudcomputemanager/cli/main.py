@@ -145,6 +145,52 @@ def jobs_checkpoint(
     asyncio.run(checkpoint_job(job_id))
 
 
+@jobs_app.command("wait")
+def jobs_wait(
+    job_id: str = typer.Argument(..., help="Job ID"),
+    timeout: int = typer.Option(
+        86400, "--timeout", "-t", help="Max wait time in seconds (default: 24h)"
+    ),
+    auto_terminate: bool = typer.Option(
+        True, "--terminate/--no-terminate", help="Terminate instance on completion"
+    ),
+):
+    """Wait for a job to complete, then sync results and optionally terminate.
+
+    Examples:
+        ccm jobs wait job_abc123                    # Wait and auto-terminate
+        ccm jobs wait job_abc123 --no-terminate    # Wait but keep instance
+        ccm jobs wait job_abc123 --timeout 3600    # Wait max 1 hour
+    """
+    from cloudcomputemanager.cli.jobs import wait_for_existing_job
+
+    asyncio.run(wait_for_existing_job(job_id, timeout, auto_terminate))
+
+
+@jobs_app.command("complete")
+def jobs_complete(
+    job_id: str = typer.Argument(..., help="Job ID"),
+    status: str = typer.Option(
+        "completed", "--status", "-s", help="Final status (completed/failed)"
+    ),
+    terminate: bool = typer.Option(
+        True, "--terminate/--no-terminate", help="Terminate instance"
+    ),
+):
+    """Mark a job as complete, sync results, and terminate instance.
+
+    Use this when a job has finished but CCM didn't detect it automatically.
+
+    Examples:
+        ccm jobs complete job_abc123                  # Mark as completed
+        ccm jobs complete job_abc123 --status failed # Mark as failed
+        ccm jobs complete job_abc123 --no-terminate  # Keep instance running
+    """
+    from cloudcomputemanager.cli.jobs import complete_job
+
+    asyncio.run(complete_job(job_id, status, terminate))
+
+
 # ============================================================================
 # Instance Commands
 # ============================================================================

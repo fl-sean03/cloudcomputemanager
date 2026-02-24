@@ -1,8 +1,9 @@
 """Job management CLI commands."""
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import yaml
 from rich.console import Console
@@ -10,6 +11,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import print as rprint
+from rich.live import Live
 
 from cloudcomputemanager.core.config import get_settings
 from cloudcomputemanager.core.database import init_db, get_session
@@ -17,6 +19,94 @@ from cloudcomputemanager.core.models import Job, JobStatus
 from cloudcomputemanager.providers.vast import VastProvider
 
 console = Console()
+
+
+async def check_job_completion(provider: VastProvider, instance_id: str) -> Tuple[bool, Optional[int]]:
+    """
+    Check if a job has completed by looking for the .ccm_exit_code file.
+
+    Returns:
+        (completed, exit_code) - completed is True if job finished, exit_code is the job's exit code
+    """
+    try:
+        exit_code, stdout, stderr = await provider.execute_command(
+            instance_id,
+            "cat /workspace/.ccm_exit_code 2>/dev/null || echo 'running'"
+        )
+
+        if exit_code == 0 and stdout.strip() != "running":
+            try:
+                job_exit_code = int(stdout.strip())
+                return True, job_exit_code
+            except ValueError:
+                return False, None
+        return False, None
+    except Exception:
+        return False, None
+
+
+async def wait_for_job_completion(
+    provider: VastProvider,
+    job: Job,
+    instance_id: str,
+    timeout: int = 86400,
+    poll_interval: int = 30,
+) -> Tuple[bool, Optional[int]]:
+    """
+    Wait for a job to complete, polling periodically.
+
+    Args:
+        provider: VastProvider instance
+        job: Job record
+        instance_id: Instance ID running the job
+        timeout: Maximum time to wait in seconds (default: 24 hours)
+        poll_interval: Time between status checks in seconds (default: 30)
+
+    Returns:
+        (completed, exit_code) - completed is True if job finished within timeout
+    """
+    start_time = asyncio.get_event_loop().time()
+    last_log_lines = ""
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Waiting for job...", total=None)
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+
+            if elapsed > timeout:
+                progress.update(task, description="[red]Timeout reached")
+                return False, None
+
+            # Check completion
+            completed, exit_code = await check_job_completion(provider, instance_id)
+            if completed:
+                return True, exit_code
+
+            # Get last few lines of log for progress display
+            try:
+                _, stdout, _ = await provider.execute_command(
+                    instance_id,
+                    "tail -1 /workspace/job.log 2>/dev/null || echo 'Starting...'"
+                )
+                log_line = stdout.strip()[:60]
+                if log_line != last_log_lines:
+                    last_log_lines = log_line
+                    progress.update(task, description=f"Running: {log_line}")
+            except Exception:
+                pass
+
+            # Update progress
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            progress.update(task, description=f"Running ({hours}h {minutes}m)... {last_log_lines[:40]}")
+
+            await asyncio.sleep(poll_interval)
 
 
 async def submit_job(
@@ -154,9 +244,23 @@ async def submit_job(
         console.print("\n[bold]Starting job...[/bold]")
 
         # For multi-line commands, write to a script file and execute it
+        # The wrapper script captures exit code for completion detection
         import base64
-        script_content = f"#!/bin/bash\nset -e\n{command}"
-        script_b64 = base64.b64encode(script_content.encode()).decode()
+        wrapper_script = f'''#!/bin/bash
+# CCM Job Wrapper - captures exit code for completion detection
+set -e
+cd /workspace
+
+# Run the actual job
+{command}
+JOB_EXIT_CODE=$?
+
+# Write exit code for CCM to detect completion
+echo $JOB_EXIT_CODE > /workspace/.ccm_exit_code
+echo "Job completed with exit code $JOB_EXIT_CODE" >> /workspace/job.log
+exit $JOB_EXIT_CODE
+'''
+        script_b64 = base64.b64encode(wrapper_script.encode()).decode()
 
         # Write script, make executable, and run in background
         setup_cmd = f"echo {script_b64} | base64 -d > /workspace/run_job.sh && chmod +x /workspace/run_job.sh"
@@ -167,7 +271,7 @@ async def submit_job(
         if exit_code != 0:
             console.print(f"[red]Failed to create job script: {stderr}[/red]")
         else:
-            # Run the script in background
+            # Run the script in background with nohup
             run_cmd = "cd /workspace && nohup bash /workspace/run_job.sh > /workspace/job.log 2>&1 &"
             exit_code, stdout, stderr = await provider.execute_command(
                 instance.instance_id, run_cmd
@@ -184,10 +288,54 @@ async def submit_job(
         sync_dir = settings.sync_local_path / job.job_id
         console.print(f"\n[bold]Sync directory:[/bold] {sync_dir}")
 
+    # Auto-terminate setting from config (default: True)
+    auto_terminate = config.get("auto_terminate", True)
+
     if wait:
         console.print("\n[dim]Waiting for job completion... (Ctrl+C to detach)[/dim]")
-        # TODO: Implement job watching
-        await asyncio.sleep(5)
+        try:
+            completed, exit_code = await wait_for_job_completion(
+                provider, job, instance.instance_id, timeout=budget.get("max_hours", 24) * 3600
+            )
+
+            if completed:
+                # Update job status
+                async with get_session() as session:
+                    from sqlmodel import select
+                    stmt = select(Job).where(Job.job_id == job.job_id)
+                    result = await session.execute(stmt)
+                    db_job = result.scalar_one_or_none()
+                    if db_job:
+                        db_job.exit_code = exit_code
+                        db_job.status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
+                        db_job.completed_at = datetime.utcnow()
+                        session.add(db_job)
+
+                if exit_code == 0:
+                    console.print("[bold green]Job completed successfully![/bold green]")
+                else:
+                    console.print(f"[bold red]Job failed with exit code {exit_code}[/bold red]")
+
+                # Final sync
+                console.print("\n[bold]Syncing final results...[/bold]")
+                sync_dir = settings.sync_local_path / job.job_id
+                sync_dir.mkdir(parents=True, exist_ok=True)
+                await provider.rsync_download(
+                    instance.instance_id,
+                    sync_config.get("source", "/workspace") + "/",
+                    str(sync_dir) + "/",
+                    exclude=sync_config.get("exclude_patterns", []),
+                )
+                console.print(f"[green]Results synced to: {sync_dir}[/green]")
+
+                # Auto-terminate if enabled
+                if auto_terminate:
+                    console.print("\n[bold]Terminating instance...[/bold]")
+                    await provider.terminate_instance(instance.instance_id)
+                    console.print("[green]Instance terminated.[/green]")
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Detached from job. Job continues running.[/yellow]")
+            console.print(f"Check status with: ccm jobs status {job.job_id}")
 
 
 async def list_jobs(
@@ -429,3 +577,142 @@ async def checkpoint_job(job_id: str) -> None:
         console.print(f"  Verified: {checkpoint.verified}")
     else:
         console.print("[red]Failed to create checkpoint![/red]")
+
+
+async def wait_for_existing_job(job_id: str, timeout: int, auto_terminate: bool) -> None:
+    """Wait for an existing job to complete."""
+    await init_db()
+
+    from sqlmodel import select
+
+    async with get_session() as session:
+        stmt = select(Job).where(Job.job_id == job_id)
+        result = await session.execute(stmt)
+        job = result.scalar_one_or_none()
+
+    if not job:
+        console.print(f"[red]Job not found: {job_id}[/red]")
+        return
+
+    if not job.instance_id:
+        console.print(f"[red]Job has no instance: {job_id}[/red]")
+        return
+
+    if job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
+        console.print(f"[yellow]Job already finished: {job.status.value}[/yellow]")
+        return
+
+    provider = VastProvider()
+    settings = get_settings()
+
+    console.print(f"\n[bold]Waiting for job:[/bold] {job_id}")
+    console.print(f"  Instance: {job.instance_id}")
+    console.print(f"  Timeout: {timeout}s")
+    console.print(f"  Auto-terminate: {auto_terminate}\n")
+
+    try:
+        completed, exit_code = await wait_for_job_completion(
+            provider, job, job.instance_id, timeout=timeout
+        )
+
+        if completed:
+            # Update job status
+            async with get_session() as session:
+                stmt = select(Job).where(Job.job_id == job_id)
+                result = await session.execute(stmt)
+                db_job = result.scalar_one_or_none()
+                if db_job:
+                    db_job.exit_code = exit_code
+                    db_job.status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
+                    db_job.completed_at = datetime.utcnow()
+                    session.add(db_job)
+
+            if exit_code == 0:
+                console.print("[bold green]Job completed successfully![/bold green]")
+            else:
+                console.print(f"[bold red]Job failed with exit code {exit_code}[/bold red]")
+
+            # Final sync
+            sync_config = job.sync_config or {}
+            if sync_config:
+                console.print("\n[bold]Syncing final results...[/bold]")
+                sync_dir = settings.sync_local_path / job_id
+                sync_dir.mkdir(parents=True, exist_ok=True)
+                await provider.rsync_download(
+                    job.instance_id,
+                    sync_config.get("source", "/workspace") + "/",
+                    str(sync_dir) + "/",
+                    exclude=sync_config.get("exclude_patterns", []),
+                )
+                console.print(f"[green]Results synced to: {sync_dir}[/green]")
+
+            # Auto-terminate if enabled
+            if auto_terminate:
+                console.print("\n[bold]Terminating instance...[/bold]")
+                await provider.terminate_instance(job.instance_id)
+                console.print("[green]Instance terminated.[/green]")
+        else:
+            console.print("[yellow]Timeout reached. Job still running.[/yellow]")
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Detached from job. Job continues running.[/yellow]")
+
+
+async def complete_job(job_id: str, status: str, terminate: bool) -> None:
+    """Mark a job as complete, sync results, and optionally terminate instance."""
+    await init_db()
+
+    from sqlmodel import select
+
+    async with get_session() as session:
+        stmt = select(Job).where(Job.job_id == job_id)
+        result = await session.execute(stmt)
+        job = result.scalar_one_or_none()
+
+        if not job:
+            console.print(f"[red]Job not found: {job_id}[/red]")
+            return
+
+        # Update status
+        if status == "completed":
+            job.status = JobStatus.COMPLETED
+        elif status == "failed":
+            job.status = JobStatus.FAILED
+        else:
+            console.print(f"[red]Invalid status: {status}. Use 'completed' or 'failed'[/red]")
+            return
+
+        job.completed_at = datetime.utcnow()
+        session.add(job)
+
+    console.print(f"[green]Job {job_id} marked as {status}[/green]")
+
+    provider = VastProvider()
+    settings = get_settings()
+
+    # Sync if instance exists
+    if job.instance_id:
+        sync_config = job.sync_config or {}
+        if sync_config:
+            console.print("\n[bold]Syncing results...[/bold]")
+            sync_dir = settings.sync_local_path / job_id
+            sync_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                await provider.rsync_download(
+                    job.instance_id,
+                    sync_config.get("source", "/workspace") + "/",
+                    str(sync_dir) + "/",
+                    exclude=sync_config.get("exclude_patterns", []),
+                )
+                console.print(f"[green]Results synced to: {sync_dir}[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Sync failed: {e}[/yellow]")
+
+        # Terminate if requested
+        if terminate:
+            console.print("\n[bold]Terminating instance...[/bold]")
+            try:
+                await provider.terminate_instance(job.instance_id)
+                console.print("[green]Instance terminated.[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Terminate failed: {e}[/yellow]")
