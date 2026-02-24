@@ -192,6 +192,128 @@ def jobs_complete(
 
 
 # ============================================================================
+# Batch Commands
+# ============================================================================
+
+batch_app = typer.Typer(help="Batch job operations")
+app.add_typer(batch_app, name="batch")
+
+
+@batch_app.command("submit")
+def batch_submit_cmd(
+    config_files: list[Path] = typer.Argument(
+        ...,
+        help="Job configuration YAML files (supports glob patterns)",
+    ),
+    parallel: int = typer.Option(
+        3, "--parallel", "-p", help="Maximum concurrent jobs"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Preview without submitting"
+    ),
+    project: Optional[str] = typer.Option(
+        None, "--project", help="Override project name for all jobs"
+    ),
+):
+    """Submit multiple jobs from YAML configuration files.
+
+    Examples:
+        ccm batch submit job1.yaml job2.yaml job3.yaml
+        ccm batch submit jobs/*.yaml --parallel 5
+        ccm batch submit jobs/*.yaml --dry-run
+        ccm batch submit jobs/*.yaml --project my-project
+    """
+    from cloudcomputemanager.cli.batch import batch_submit
+
+    # Expand glob patterns
+    expanded_files = []
+    for path in config_files:
+        if '*' in str(path):
+            expanded_files.extend(Path('.').glob(str(path)))
+        else:
+            expanded_files.append(path)
+
+    if not expanded_files:
+        console.print("[red]No configuration files found[/red]")
+        raise typer.Exit(1)
+
+    asyncio.run(batch_submit(expanded_files, parallel, dry_run, project))
+
+
+@batch_app.command("status")
+def batch_status_cmd(
+    project: Optional[str] = typer.Option(
+        None, "--project", "-p", help="Filter by project"
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-l", help="Maximum jobs to show"
+    ),
+):
+    """Show status summary of multiple jobs.
+
+    Examples:
+        ccm batch status
+        ccm batch status --project ensemble-sampling
+    """
+    from cloudcomputemanager.cli.batch import batch_status
+
+    asyncio.run(batch_status(project, limit))
+
+
+@batch_app.command("wait")
+def batch_wait_cmd(
+    project: Optional[str] = typer.Option(
+        None, "--project", "-p", help="Filter by project"
+    ),
+    timeout: int = typer.Option(
+        86400, "--timeout", "-t", help="Max wait time in seconds"
+    ),
+    poll_interval: int = typer.Option(
+        60, "--poll", help="Seconds between status checks"
+    ),
+):
+    """Wait for all running jobs to complete.
+
+    Monitors running jobs, syncs results, and terminates instances
+    as jobs complete.
+
+    Examples:
+        ccm batch wait
+        ccm batch wait --project ensemble-sampling
+        ccm batch wait --timeout 3600  # Max 1 hour
+    """
+    from cloudcomputemanager.cli.batch import batch_wait
+
+    asyncio.run(batch_wait(project, timeout, poll_interval))
+
+
+@batch_app.command("cancel")
+def batch_cancel_cmd(
+    project: Optional[str] = typer.Option(
+        None, "--project", "-p", help="Filter by project"
+    ),
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s", help="Filter by status"
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Actually cancel (default: preview only)"
+    ),
+):
+    """Cancel multiple jobs.
+
+    By default, shows what would be cancelled. Use --force to execute.
+
+    Examples:
+        ccm batch cancel                           # Preview all active jobs
+        ccm batch cancel --project my-proj         # Preview project jobs
+        ccm batch cancel --project my-proj --force # Actually cancel
+    """
+    from cloudcomputemanager.cli.batch import batch_cancel
+
+    asyncio.run(batch_cancel(project, status, force))
+
+
+# ============================================================================
 # Instance Commands
 # ============================================================================
 
