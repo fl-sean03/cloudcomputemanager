@@ -409,6 +409,92 @@ def packstore_verify(
 
 
 # ============================================================================
+# Cleanup Command
+# ============================================================================
+
+
+@app.command("cleanup")
+def cleanup(
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--execute", help="Preview changes without executing"
+    ),
+    stale_jobs: bool = typer.Option(
+        True, "--jobs/--no-jobs", help="Clean up stale jobs"
+    ),
+    orphan_instances: bool = typer.Option(
+        False, "--orphans/--no-orphans", help="Terminate orphan instances"
+    ),
+):
+    """Clean up stale jobs and orphan instances.
+
+    By default, runs in dry-run mode showing what would be cleaned.
+    Use --execute to actually perform cleanup.
+
+    Examples:
+        ccm cleanup                    # Preview what would be cleaned
+        ccm cleanup --execute          # Actually clean up stale jobs
+        ccm cleanup --orphans          # Also show orphan instances
+        ccm cleanup --execute --orphans # Clean up jobs AND terminate orphans
+    """
+    from cloudcomputemanager.core.database import init_db
+    from cloudcomputemanager.core.cleanup import (
+        cleanup_stale_jobs,
+        cleanup_orphan_instances,
+        get_cleanup_summary,
+    )
+    from cloudcomputemanager.providers.vast import VastProvider
+
+    async def run_cleanup():
+        await init_db()
+        provider = VastProvider()
+
+        # Get summary first
+        summary = await get_cleanup_summary(provider)
+
+        if dry_run:
+            console.print("\n[bold]Cleanup Preview[/bold] (dry-run mode)\n")
+        else:
+            console.print("\n[bold]Executing Cleanup[/bold]\n")
+
+        # Stale jobs
+        if stale_jobs:
+            console.print(f"[cyan]Stale Jobs:[/cyan] {summary['stale_jobs']}")
+            if summary['stale_job_reasons']:
+                for reason, count in summary['stale_job_reasons'].items():
+                    console.print(f"  - {reason}: {count}")
+
+            if summary['stale_jobs'] > 0:
+                cleaned = await cleanup_stale_jobs(provider, dry_run=dry_run)
+                if dry_run:
+                    console.print("\n[yellow]Would mark as FAILED:[/yellow]")
+                else:
+                    console.print("\n[green]Marked as FAILED:[/green]")
+                for job_id, old_status, reason in cleaned:
+                    console.print(f"  {job_id}: {old_status} -> FAILED ({reason})")
+
+        # Orphan instances
+        if orphan_instances:
+            console.print(f"\n[cyan]Orphan Instances:[/cyan] {summary['orphan_instances']}")
+            if summary['orphan_instances'] > 0:
+                orphans = await cleanup_orphan_instances(provider, dry_run=dry_run)
+                if dry_run:
+                    console.print("\n[yellow]Would terminate:[/yellow]")
+                else:
+                    console.print("\n[green]Terminated:[/green]")
+                for instance_id, label in orphans:
+                    console.print(f"  {instance_id}: {label or '(no label)'}")
+
+        if dry_run and (summary['stale_jobs'] > 0 or summary['orphan_instances'] > 0):
+            console.print("\n[dim]Run with --execute to apply changes[/dim]")
+        elif not dry_run:
+            console.print("\n[green]Cleanup complete![/green]")
+        else:
+            console.print("\n[green]Nothing to clean up![/green]")
+
+    asyncio.run(run_cleanup())
+
+
+# ============================================================================
 # Quick PackStore Commands (top-level)
 # ============================================================================
 
