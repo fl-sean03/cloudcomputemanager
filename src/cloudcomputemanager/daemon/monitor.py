@@ -271,12 +271,21 @@ class JobMonitor:
         """Main monitoring loop."""
         logger.info("Monitor loop started", poll_interval=self.config.poll_interval)
 
+        # Import recovery manager
+        from cloudcomputemanager.core.recovery import RecoveryManager
+        recovery_manager = RecoveryManager(
+            provider=self.provider,
+            max_attempts=self.config.max_recovery_attempts,
+        )
+
+        last_recovery_check = 0
+
         while self._running:
             try:
                 # Get running jobs
                 async with get_session() as session:
                     stmt = select(Job).where(
-                        Job.status.in_([JobStatus.RUNNING, JobStatus.RECOVERING])
+                        Job.status == JobStatus.RUNNING
                     )
                     result = await session.execute(stmt)
                     jobs = result.scalars().all()
@@ -301,6 +310,28 @@ class JobMonitor:
                     if not healthy:
                         await self.handle_preemption(job, reason)
                         continue
+
+                # Handle recovery jobs periodically
+                import time
+                if self.config.preemption_recovery and time.time() - last_recovery_check > 60:
+                    last_recovery_check = time.time()
+
+                    async with get_session() as session:
+                        stmt = select(Job).where(Job.status == JobStatus.RECOVERING)
+                        result = await session.execute(stmt)
+                        recovering_jobs = result.scalars().all()
+
+                    if recovering_jobs:
+                        logger.info("Processing recovery jobs", count=len(recovering_jobs))
+                        for job in recovering_jobs:
+                            try:
+                                result = await recovery_manager.recover_job(job)
+                                if result.success:
+                                    logger.info("Job recovered", job_id=job.job_id, instance=result.new_instance_id)
+                                else:
+                                    logger.warning("Recovery failed", job_id=job.job_id, error=result.error)
+                            except Exception as e:
+                                logger.error("Recovery error", job_id=job.job_id, error=str(e))
 
             except Exception as e:
                 logger.error("Monitor loop error", error=str(e))

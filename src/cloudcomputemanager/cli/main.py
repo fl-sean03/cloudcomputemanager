@@ -191,6 +191,23 @@ def jobs_complete(
     asyncio.run(complete_job(job_id, status, terminate))
 
 
+@jobs_app.command("recover")
+def jobs_recover(
+    job_id: Optional[str] = typer.Argument(None, help="Job ID (or all recovering jobs)"),
+):
+    """Manually trigger recovery for a failed/preempted job.
+
+    If no job_id is provided, recovers all jobs in RECOVERING state.
+
+    Examples:
+        ccm jobs recover job_abc123    # Recover specific job
+        ccm jobs recover               # Recover all pending jobs
+    """
+    from cloudcomputemanager.cli.jobs import recover_jobs
+
+    asyncio.run(recover_jobs(job_id))
+
+
 # ============================================================================
 # Batch Commands
 # ============================================================================

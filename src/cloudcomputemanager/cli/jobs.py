@@ -716,3 +716,71 @@ async def complete_job(job_id: str, status: str, terminate: bool) -> None:
                 console.print("[green]Instance terminated.[/green]")
             except Exception as e:
                 console.print(f"[yellow]Terminate failed: {e}[/yellow]")
+
+
+async def recover_jobs(job_id: Optional[str] = None) -> None:
+    """Manually trigger recovery for failed/preempted jobs."""
+    await init_db()
+
+    from sqlmodel import select
+    from cloudcomputemanager.core.recovery import RecoveryManager
+
+    recovery_manager = RecoveryManager()
+
+    if job_id:
+        # Recover specific job
+        async with get_session() as session:
+            stmt = select(Job).where(Job.job_id == job_id)
+            result = await session.execute(stmt)
+            job = result.scalar_one_or_none()
+
+        if not job:
+            console.print(f"[red]Job not found: {job_id}[/red]")
+            return
+
+        if job.status not in [JobStatus.FAILED, JobStatus.RECOVERING]:
+            console.print(f"[yellow]Job is not in recoverable state: {job.status.value}[/yellow]")
+            # Ask if they want to force recovery
+            console.print("[dim]Set job to RECOVERING state first if you want to retry[/dim]")
+            return
+
+        console.print(f"\n[bold]Recovering job:[/bold] {job_id}")
+        console.print(f"  Name: {job.name}")
+        console.print(f"  Attempt: {job.attempt_number + 1}")
+
+        with console.status("Recovering..."):
+            result = await recovery_manager.recover_job(job)
+
+        if result.success:
+            console.print(f"\n[bold green]Recovery successful![/bold green]")
+            console.print(f"  New instance: {result.new_instance_id}")
+            console.print(f"  Checkpoint restored: {result.checkpoint_restored}")
+        else:
+            console.print(f"\n[bold red]Recovery failed[/bold red]")
+            console.print(f"  Error: {result.error}")
+
+    else:
+        # Recover all jobs in RECOVERING state
+        async with get_session() as session:
+            stmt = select(Job).where(Job.status == JobStatus.RECOVERING)
+            result = await session.execute(stmt)
+            jobs = result.scalars().all()
+
+        if not jobs:
+            console.print("[yellow]No jobs in RECOVERING state[/yellow]")
+            return
+
+        console.print(f"\n[bold]Recovering {len(jobs)} jobs...[/bold]")
+
+        for job in jobs:
+            console.print(f"\n  Recovering: {job.name} ({job.job_id})")
+            try:
+                result = await recovery_manager.recover_job(job)
+                if result.success:
+                    console.print(f"    [green]Success[/green] - Instance: {result.new_instance_id}")
+                else:
+                    console.print(f"    [red]Failed[/red] - {result.error}")
+            except Exception as e:
+                console.print(f"    [red]Error[/red] - {e}")
+
+        console.print("\n[bold]Recovery complete[/bold]")
