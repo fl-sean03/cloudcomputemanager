@@ -577,6 +577,168 @@ def packstore_verify(
 
 
 # ============================================================================
+# Daemon Commands
+# ============================================================================
+
+daemon_app = typer.Typer(help="Background monitoring daemon")
+app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("start")
+def daemon_start(
+    foreground: bool = typer.Option(
+        False, "--foreground", "-f", help="Run in foreground (don't daemonize)"
+    ),
+    poll_interval: int = typer.Option(
+        30, "--poll-interval", help="Seconds between status checks"
+    ),
+):
+    """Start the CCM daemon for background job monitoring.
+
+    The daemon monitors all running jobs and:
+    - Detects job completion
+    - Syncs results automatically
+    - Terminates instances after completion
+    - Handles preemption recovery
+
+    Examples:
+        ccm daemon start              # Start as background daemon
+        ccm daemon start --foreground # Run in foreground (for debugging)
+    """
+    from cloudcomputemanager.daemon.service import DaemonService, run_daemon, daemonize
+    from cloudcomputemanager.daemon.monitor import MonitorConfig
+
+    if DaemonService.is_running():
+        console.print("[yellow]Daemon is already running[/yellow]")
+        pid = DaemonService.get_pid()
+        console.print(f"  PID: {pid}")
+        return
+
+    config = MonitorConfig(poll_interval=poll_interval)
+
+    if foreground:
+        console.print("[bold]Starting daemon in foreground...[/bold]")
+        console.print("Press Ctrl+C to stop\n")
+        run_daemon(config)
+    else:
+        console.print("[bold]Starting daemon in background...[/bold]")
+        import subprocess
+        import sys
+
+        # Start daemon as subprocess
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "cloudcomputemanager.daemon.service"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait a moment and check if started
+        import time
+        time.sleep(2)
+
+        if DaemonService.is_running():
+            console.print(f"[green]Daemon started[/green]")
+            console.print(f"  PID: {DaemonService.get_pid()}")
+        else:
+            console.print("[red]Failed to start daemon[/red]")
+
+
+@daemon_app.command("stop")
+def daemon_stop():
+    """Stop the running CCM daemon."""
+    from cloudcomputemanager.daemon.service import DaemonService
+
+    if not DaemonService.is_running():
+        console.print("[yellow]Daemon is not running[/yellow]")
+        return
+
+    pid = DaemonService.get_pid()
+    console.print(f"Stopping daemon (PID: {pid})...")
+
+    if DaemonService.stop():
+        import time
+        time.sleep(1)
+        if not DaemonService.is_running():
+            console.print("[green]Daemon stopped[/green]")
+        else:
+            console.print("[yellow]Daemon stopping...[/yellow]")
+    else:
+        console.print("[red]Failed to stop daemon[/red]")
+
+
+@daemon_app.command("status")
+def daemon_status():
+    """Show daemon status."""
+    from cloudcomputemanager.daemon.service import DaemonService
+
+    status = DaemonService.get_status()
+    pid = DaemonService.get_pid()
+
+    if pid:
+        console.print(f"[green]Daemon is running[/green]")
+        console.print(f"  PID: {pid}")
+        if status:
+            console.print(f"  Monitored jobs: {status.get('monitored_jobs', 'unknown')}")
+            console.print(f"  Poll interval: {status.get('poll_interval', 'unknown')}s")
+            console.print(f"  Last update: {status.get('timestamp', 'unknown')}")
+    else:
+        console.print("[yellow]Daemon is not running[/yellow]")
+        if status and status.get("stopped_at"):
+            console.print(f"  Last stopped: {status['stopped_at']}")
+
+
+@daemon_app.command("logs")
+def daemon_logs(
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of log lines"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+):
+    """Show daemon logs."""
+    from cloudcomputemanager.daemon.service import DaemonService
+    from cloudcomputemanager.core.config import get_settings
+
+    settings = get_settings()
+    log_file = settings.data_dir / "daemon.log"
+
+    if not log_file.exists():
+        console.print("[yellow]No daemon logs found[/yellow]")
+        return
+
+    if follow:
+        # Follow mode - use tail -f
+        import subprocess
+        console.print(f"[dim]Following {log_file}... (Ctrl+C to stop)[/dim]\n")
+        try:
+            subprocess.run(["tail", "-f", str(log_file)])
+        except KeyboardInterrupt:
+            pass
+    else:
+        # Show recent logs
+        logs = DaemonService.get_logs(lines)
+        if not logs:
+            console.print("[yellow]No recent logs[/yellow]")
+            return
+
+        for entry in logs:
+            ts = entry.get("timestamp", "")[:19]
+            event = entry.get("event", "unknown")
+            job_id = entry.get("job_id", "")
+            data = entry.get("data", {})
+
+            # Color by event type
+            if "completed" in event:
+                color = "green"
+            elif "failed" in event or "error" in event:
+                color = "red"
+            elif "preempted" in event:
+                color = "yellow"
+            else:
+                color = "blue"
+
+            console.print(f"[dim]{ts}[/dim] [{color}]{event}[/{color}] {job_id} {data}")
+
+
+# ============================================================================
 # Cleanup Command
 # ============================================================================
 
