@@ -4,10 +4,15 @@ Defines the interface that all provider implementations must follow.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import AsyncIterator, Optional
+
+import structlog
+
+_base_logger = structlog.get_logger(__name__)
 
 
 class ProviderStatus(str, Enum):
@@ -105,10 +110,11 @@ class CloudProvider(ABC):
         self,
         gpu_type: Optional[str] = None,
         gpu_count: int = 1,
-        gpu_memory_min: int = 16,
+        gpu_memory_min: Optional[int] = None,
         disk_gb_min: int = 50,
         max_hourly_rate: Optional[float] = None,
         interruptible: bool = True,
+        cpu_cores_min: Optional[int] = None,
     ) -> list[ProviderOffer]:
         """Search for available GPU offers.
 
@@ -258,3 +264,91 @@ class CloudProvider(ABC):
                     pass
             await asyncio.sleep(interval)
         return False
+
+    @asynccontextmanager
+    async def managed_instance(
+        self,
+        instance_id: str,
+    ) -> AsyncIterator[str]:
+        """Context manager that guarantees instance termination on exit.
+
+        Usage:
+            async with provider.managed_instance(instance_id) as iid:
+                await provider.execute_command(iid, "run_job.sh")
+            # Instance is always terminated, even on exception
+
+        Args:
+            instance_id: The instance ID to manage
+
+        Yields:
+            The instance ID
+        """
+        try:
+            yield instance_id
+        finally:
+            try:
+                await self.terminate_instance(instance_id)
+                _base_logger.info("Managed instance terminated", instance_id=instance_id)
+            except Exception as e:
+                _base_logger.error(
+                    "Failed to terminate managed instance",
+                    instance_id=instance_id,
+                    error=str(e),
+                )
+
+    async def search_with_gpu_preferences(
+        self,
+        gpu_preferences: list[dict],
+        gpu_count: int = 1,
+        disk_gb_min: int = 50,
+        interruptible: bool = True,
+        cpu_cores_min: Optional[int] = None,
+    ) -> list[ProviderOffer]:
+        """Search for offers using tiered GPU preferences.
+
+        Tries each GPU tier in order, returning offers from the first tier
+        that has availability. Each tier can specify its own price cap.
+
+        Args:
+            gpu_preferences: Ordered list of dicts with keys:
+                - gpu_type: str (e.g., "RTX_3060")
+                - max_hourly_rate: float (price cap for this tier)
+                - expected_performance: float (optional, for info)
+            gpu_count: Number of GPUs
+            disk_gb_min: Minimum disk space
+            interruptible: Spot instance
+            cpu_cores_min: Minimum CPU cores
+
+        Returns:
+            Offers from the first tier with availability, or empty list.
+        """
+        for tier in gpu_preferences:
+            gpu_type = tier.get("gpu_type")
+            max_rate = tier.get("max_hourly_rate")
+
+            offers = await self.search_offers(
+                gpu_type=gpu_type,
+                gpu_count=gpu_count,
+                disk_gb_min=disk_gb_min,
+                max_hourly_rate=max_rate,
+                interruptible=interruptible,
+                cpu_cores_min=cpu_cores_min,
+            )
+
+            if offers:
+                _base_logger.info(
+                    "Found offers in GPU tier",
+                    gpu_type=gpu_type,
+                    max_rate=max_rate,
+                    count=len(offers),
+                )
+                return offers
+
+            _base_logger.debug(
+                "No offers in GPU tier, trying next",
+                gpu_type=gpu_type,
+                max_rate=max_rate,
+            )
+
+        _base_logger.warning("No offers found in any GPU tier")
+        return []

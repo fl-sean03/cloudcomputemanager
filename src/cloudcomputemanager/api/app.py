@@ -42,10 +42,11 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS middleware
+    # CORS middleware — configurable via CCM_CORS_ORIGINS env var
+    cors_origins = settings.cors_origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

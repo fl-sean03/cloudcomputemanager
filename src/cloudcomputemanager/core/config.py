@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8765, ge=1, le=65535, description="API server port")
     api_reload: bool = Field(default=False, description="Enable auto-reload for development")
     api_workers: int = Field(default=1, ge=1, description="Number of API workers")
+    cors_origins: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8080",
+                 "http://127.0.0.1:3000", "http://127.0.0.1:8080"],
+        description="Allowed CORS origins",
+    )
 
     # =========================================================================
     # SSH Settings
@@ -183,11 +188,12 @@ class Settings(BaseSettings):
 
     def get_database_path(self) -> Path:
         """Get the SQLite database path."""
-        # Handle ~ expansion in the URL
         url = self.database_url
         if url.startswith("sqlite"):
-            path_part = url.split("///")[-1]
-            return Path(path_part).expanduser()
+            # Handle sqlite:///path and sqlite+aiosqlite:///path formats
+            idx = url.find("///")
+            if idx != -1:
+                return Path(url[idx + 3:]).expanduser()
         return Path(self.data_dir / "cloudcomputemanager.db")
 
 

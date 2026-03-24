@@ -1,0 +1,43 @@
+# Quick test job for CCM validation
+# Runs a simple command and exits to test the full lifecycle
+
+name: ccm-validation-test
+project: ccm-testing
+
+# Basic PyTorch image (widely available)
+image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# Quick command that tests various features
+command: |
+  cd /workspace
+  echo "CCM Test Job Started at $(date)"
+  echo "Testing CUDA availability..."
+  python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+  python -c "import torch; print(f'GPU count: {torch.cuda.device_count()}')" || true
+  echo "Testing file I/O..."
+  echo "Test output file" > /workspace/test_output.txt
+  ls -la /workspace/
+  echo "Sleeping 30 seconds to simulate work..."
+  sleep 30
+  echo "CCM Test Job Completed at $(date)"
+
+resources:
+  gpu_type: RTX_3090
+  gpu_count: 1
+  gpu_memory_min: 16
+  disk_gb: 50
+
+sync:
+  enabled: true
+  source: /workspace
+  include_patterns:
+    - "*.txt"
+    - "*.log"
+
+budget:
+  max_hourly_rate: 0.20
+  max_cost_usd: 0.50
+  max_hours: 1
+
+# Auto-terminate when done
+auto_terminate: true

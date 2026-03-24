@@ -4,6 +4,7 @@ Handles deploying packages to instances using various strategies.
 """
 
 import asyncio
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -423,7 +424,7 @@ rm /tmp/miniconda.sh
 
         # Create environment
         if source.spec:
-            cmd = f"/opt/conda/bin/conda create -y -n {env_name} {source.spec} -c conda-forge"
+            cmd = f"/opt/conda/bin/conda create -y -n {shlex.quote(env_name)} {shlex.quote(source.spec)} -c conda-forge"
         elif source.env_file:
             cmd = f"/opt/conda/bin/conda env create -y -n {env_name} -f {source.env_file}"
         else:
@@ -464,7 +465,7 @@ echo '. /opt/spack/share/spack/setup-env.sh' >> ~/.bashrc
                 return {"success": False, "error": f"Spack install failed: {stderr}"}
 
         # Install package
-        cmd = f". /opt/spack/share/spack/setup-env.sh && spack install {source.spec}"
+        cmd = f". /opt/spack/share/spack/setup-env.sh && spack install {shlex.quote(source.spec)}"
         logger.info("Installing with Spack", spec=source.spec)
         exit_code, stdout, stderr = await execute_fn(cmd)
 
@@ -490,7 +491,7 @@ echo '. /opt/spack/share/spack/setup-env.sh' >> ~/.bashrc
         # Set up environment
         env_setup = ""
         for key, value in variant.environment.items():
-            env_setup += f"export {key}={value}; "
+            env_setup += f"export {key}={shlex.quote(value)}; "
 
         cmd = f"{env_setup}{variant.test_command}"
         exit_code, stdout, stderr = await execute_fn(cmd)

@@ -71,7 +71,7 @@ class SyncEngine:
         if config.destination.startswith("s3://"):
             # S3 sync - would use boto3/rclone
             local_dest = self._settings.sync_local_path / job_id
-            # TODO: Implement S3 upload after local sync
+            logger.warning("S3 sync is not yet implemented; using local sync only")
         else:
             # Local path
             local_dest = Path(config.destination).expanduser()

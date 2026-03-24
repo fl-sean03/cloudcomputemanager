@@ -73,9 +73,11 @@ class RecoveryManager:
         resources = job.resources or {}
         budget = job.budget or {}
 
-        gpu_type = resources.get("gpu_type", "RTX_4090")
+        # Use user-specified values without hardcoded defaults
+        # The vast.py provider will handle None values with sensible defaults
+        gpu_type = resources.get("gpu_type")
         gpu_count = resources.get("gpu_count", 1)
-        gpu_memory_min = resources.get("gpu_memory_min", 16)
+        gpu_memory_min = resources.get("gpu_memory_min")  # None if not specified
         disk_gb = resources.get("disk_gb", 50)
         max_hourly_rate = budget.get("max_hourly_rate")
 
@@ -83,6 +85,7 @@ class RecoveryManager:
             "Searching for recovery instance",
             job_id=job.job_id,
             gpu_type=gpu_type,
+            gpu_memory_min=gpu_memory_min,
         )
 
         offers = await self.provider.search_offers(
@@ -94,7 +97,7 @@ class RecoveryManager:
         )
 
         if not offers:
-            logger.warning("No recovery offers found", job_id=job.job_id)
+            logger.warning("No recovery offers found", job_id=job.job_id, gpu_type=gpu_type)
             return None
 
         # Return best offer
@@ -349,6 +352,7 @@ exit $JOB_EXIT_CODE
                 db_job.attempt_number += 1
                 db_job.error_message = None
                 session.add(db_job)
+                await session.commit()
 
         logger.info(
             "Job recovery successful",

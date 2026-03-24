@@ -1,0 +1,24 @@
+# Test job for GPU query fix validation
+# This config uses RTX_3060 which should NOT be overridden to RTX_4090
+
+name: ccm-gpu-query-fix-test
+project: ccm-testing
+
+image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+command: |
+  echo "GPU Query Fix Test"
+  python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+  echo "Test completed"
+
+resources:
+  gpu_type: RTX_3060
+  gpu_memory_gb: 8   # Using alternate key name - should be normalized to gpu_memory_min
+  disk_gb: 20
+
+budget:
+  max_hourly_rate: 0.10
+  max_cost_usd: 0.10
+  max_hours: 1
+
+auto_terminate: true

@@ -58,8 +58,20 @@ class DaemonService:
         status["timestamp"] = datetime.utcnow().isoformat()
         self._status_file.write_text(json.dumps(status, indent=2))
 
+    def _rotate_log_if_needed(self) -> None:
+        """Rotate log file if it exceeds 10MB."""
+        if self._log_file.exists() and self._log_file.stat().st_size > 10 * 1024 * 1024:
+            # Keep up to 5 rotated logs
+            for i in range(4, 0, -1):
+                old = self._log_file.with_suffix(f".{i}")
+                new = self._log_file.with_suffix(f".{i + 1}")
+                if old.exists():
+                    old.rename(new)
+            self._log_file.rename(self._log_file.with_suffix(".1"))
+
     def _handle_event(self, event: MonitorEvent) -> None:
         """Handle monitor events - log them."""
+        self._rotate_log_if_needed()
         log_entry = {
             "timestamp": event.timestamp.isoformat(),
             "event": event.event_type.value,
@@ -233,9 +245,11 @@ def daemonize() -> None:
         sys.exit(0)
 
     # Redirect stdio to /dev/null
-    sys.stdin.close()
-    sys.stdout.close()
-    sys.stderr.close()
+    devnull_r = open(os.devnull, 'r')
+    devnull_w = open(os.devnull, 'w')
+    sys.stdin = devnull_r
+    sys.stdout = devnull_w
+    sys.stderr = devnull_w
 
     # Run the daemon
     run_daemon()

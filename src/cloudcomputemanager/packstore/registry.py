@@ -125,9 +125,21 @@ class Compatibility:
         """Check if version >= min_version."""
 
         def parse_version(v: str) -> list[int]:
-            return [int(x) for x in re.findall(r"\d+", v)]
+            parts = re.findall(r"\d+", v)
+            if not parts:
+                return [0]
+            return [int(x) for x in parts]
 
-        return parse_version(version) >= parse_version(min_version)
+        try:
+            return parse_version(version) >= parse_version(min_version)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Could not compare versions",
+                version=version,
+                min_version=min_version,
+                error=str(e),
+            )
+            return False
 
 
 @dataclass
