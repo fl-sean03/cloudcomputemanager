@@ -70,7 +70,7 @@ src/cloudcomputemanager/
 
 ```yaml
 name: my-job                          # Required
-project: my-project                   # For batch grouping
+project: my-project                   # IMPORTANT: set a unique project name per agent/campaign
 image: ubuntu:22.04                   # Docker image
 setup: |                              # Pre-job setup (runs before job starts)
   apt-get update && apt-get install -y python3-pip
@@ -272,6 +272,42 @@ Key files for resilience:
 - `daemon/monitor.py` → `handle_job_completion()` — exit 143 → auto-recovery
 - `cli/jobs.py` → `reconnect_jobs()` — manual reconnection without daemon
 - `providers/vast.py` — instance heartbeat (writes .ccm_heartbeat every 60s)
+
+## Multi-Agent / Multi-Project Usage
+
+CCM uses a **single daemon, single database, single Vast.ai API key**. Multiple agents (or humans) share this infrastructure safely. Isolation is done via the `project` field.
+
+**Rules for agents:**
+1. **Always set a unique `project` name** in every job YAML — this is how your jobs are isolated from other agents' jobs
+2. **Always filter by your project** when listing/waiting: `ccm jobs list --project my-project`
+3. **The daemon monitors ALL jobs** — you don't start your own daemon. One daemon handles completion, preemption recovery, budget enforcement for everyone.
+4. **Each job gets its own instance** — no resource conflicts between agents
+
+```yaml
+# Agent A (Amaxine project)
+project: amaxine-2026
+
+# Agent B (Pt-catalysis)
+project: pt-catalysis
+
+# Agent C (ML-solvent)
+project: ml-solvent
+```
+
+```bash
+# Each agent scopes commands to its own project:
+ccm jobs list --project amaxine-2026
+ccm batch wait --project pt-catalysis
+ccm batch status --project ml-solvent
+
+# ccm reconnect and ccm daemon check ALL projects — this is correct behavior
+```
+
+**Why one daemon is better than multiple:**
+- No SQLite locking conflicts
+- Global budget visibility across all projects
+- No race conditions on preemption recovery
+- Single heartbeat monitoring for all instances
 
 ## Key Files for Development
 
