@@ -229,7 +229,11 @@ class VastProvider(CloudProvider):
                 onstart_parts.append(f'echo "export {key}=\"{value}\"" >> ~/.bashrc')
 
         if startup_script:
-            onstart_parts.append(startup_script)
+            # Convert multiline setup script to single-line shell commands.
+            # Vast.ai onstart-cmd is passed as a single string, so newlines
+            # need to be converted to command separators.
+            lines = [line.strip() for line in startup_script.strip().split("\n") if line.strip()]
+            onstart_parts.extend(lines)
 
         # Write a sentinel file when setup completes so CCM can detect readiness
         onstart_parts.append("touch /tmp/.ccm_setup_done")
