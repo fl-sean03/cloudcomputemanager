@@ -1,7 +1,7 @@
 """Vast.ai provider implementation.
 
-Uses the vastai-sdk for direct API access, with SkyPilot integration for
-job orchestration when available.
+Uses the vastai CLI for API operations with SSH-based command execution
+and rsync file transfers.
 """
 
 import asyncio
@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Optional
 
 import structlog
+
+SSH_MAX_RETRIES = 3
+SSH_RETRY_BACKOFF = [2, 4, 8]  # seconds between retries
 
 from cloudcomputemanager.core.config import get_settings
 from cloudcomputemanager.providers.base import (
@@ -89,23 +92,42 @@ class VastProvider(CloudProvider):
         self,
         gpu_type: Optional[str] = None,
         gpu_count: int = 1,
-        gpu_memory_min: int = 16,
+        gpu_memory_min: Optional[int] = None,
         disk_gb_min: int = 50,
         max_hourly_rate: Optional[float] = None,
         interruptible: bool = True,
+        cpu_cores_min: Optional[int] = None,
     ) -> list[ProviderOffer]:
-        """Search for available GPU offers on Vast.ai."""
+        """Search for available GPU offers on Vast.ai.
+
+        Args:
+            gpu_type: GPU type to search for (e.g., "RTX_4090"). If None, any GPU type.
+            gpu_count: Number of GPUs required.
+            gpu_memory_min: Minimum GPU memory in GB. If None, defaults to 8GB.
+            disk_gb_min: Minimum disk space in GB.
+            max_hourly_rate: Maximum hourly rate. If None, no price limit.
+            interruptible: Whether to search for interruptible (spot) instances.
+            cpu_cores_min: Minimum number of CPU cores. If None, no CPU filter.
+
+        Returns:
+            List of ProviderOffer objects sorted by score.
+        """
+        # Use sensible default for gpu_memory_min if not specified
+        effective_gpu_memory = gpu_memory_min if gpu_memory_min is not None else 8
+
         # Build search query
         query_parts = [
             f"num_gpus={gpu_count}",
-            f"gpu_ram>={gpu_memory_min}",
+            f"gpu_ram>={effective_gpu_memory}",
             f"disk_space>={disk_gb_min}",
             "verified=true",
             "rented=false",
         ]
 
         if gpu_type:
-            query_parts.append(f"gpu_name={gpu_type}")
+            # Vast.ai requires underscores instead of spaces in GPU names
+            gpu_type_normalized = gpu_type.replace(" ", "_")
+            query_parts.append(f"gpu_name={gpu_type_normalized}")
 
         if max_hourly_rate:
             price_field = "dph_total" if interruptible else "dph_base"
@@ -113,6 +135,10 @@ class VastProvider(CloudProvider):
 
         if interruptible:
             query_parts.append("rentable=true")
+
+        if cpu_cores_min:
+            # Filter by minimum CPU cores (effective cores)
+            query_parts.append(f"cpu_cores_effective>={cpu_cores_min}")
 
         query = " ".join(query_parts)
 
@@ -194,7 +220,7 @@ class VastProvider(CloudProvider):
         # We don't need to add the key via onstart script
         onstart_parts = [
             "touch ~/.no_auto_tmux",
-            f'echo "{self._api_key}" > ~/.vast_api_key',
+            f'echo "{self._api_key}" > ~/.vast_api_key && chmod 600 ~/.vast_api_key',
         ]
 
         if env_vars:
@@ -204,6 +230,19 @@ class VastProvider(CloudProvider):
 
         if startup_script:
             onstart_parts.append(startup_script)
+
+        # Write a sentinel file when setup completes so CCM can detect readiness
+        onstart_parts.append("touch /tmp/.ccm_setup_done")
+
+        # Start a background heartbeat that writes instance health to disk every 60s.
+        # This lets CCM reconnect and determine when the instance was last alive,
+        # even if the daemon was down for hours.
+        heartbeat_cmd = (
+            "(while true; do "
+            "date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/.ccm_heartbeat; "
+            "sleep 60; done) &"
+        )
+        onstart_parts.append(heartbeat_cmd)
 
         onstart = " && ".join(onstart_parts)
         args.extend(["--onstart-cmd", onstart])
@@ -305,7 +344,13 @@ class VastProvider(CloudProvider):
             return None
 
         except RuntimeError as e:
-            if "not found" in str(e).lower():
+            error_str = str(e).lower()
+            if "not found" in error_str:
+                return None
+            # Vast.ai CLI crashes with TypeError when instance is still booting
+            # (start_date is None). Treat as "not ready yet" instead of fatal.
+            if "typeerror" in error_str or "nonetype" in error_str:
+                logger.debug("Instance not ready yet (CLI error)", instance_id=instance_id)
                 return None
             raise
 
@@ -342,28 +387,22 @@ class VastProvider(CloudProvider):
         except RuntimeError:
             return False
 
-    async def execute_command(
+    def _build_ssh_cmd(
         self,
-        instance_id: str,
+        host: str,
+        port: int,
+        user: str,
         command: str,
         timeout: int = 60,
-    ) -> tuple[int, str, str]:
-        """Execute a command on an instance via SSH."""
-        instance = await self.get_instance(instance_id)
-        if not instance:
-            raise RuntimeError(f"Instance {instance_id} not found")
-
-        if instance.status != ProviderStatus.RUNNING:
-            raise RuntimeError(f"Instance {instance_id} is not running")
-
-        # Build SSH command
+    ) -> list[str]:
+        """Build an SSH command list."""
         ssh_cmd = [
             "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", f"ConnectTimeout={min(timeout, 30)}",
-            "-p", str(instance.ssh_port),
-            f"{instance.ssh_user}@{instance.ssh_host}",
+            "-p", str(port),
+            f"{user}@{host}",
             command,
         ]
 
@@ -371,21 +410,69 @@ class VastProvider(CloudProvider):
             ssh_cmd.insert(1, "-i")
             ssh_cmd.insert(2, str(self._ssh_key_path))
 
-        logger.debug("Executing SSH command", host=instance.ssh_host, command=command[:50])
+        return ssh_cmd
 
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+    async def execute_command(
+        self,
+        instance_id: str,
+        command: str,
+        timeout: int = 60,
+    ) -> tuple[int, str, str]:
+        """Execute a command on an instance via SSH with retry on connection failures."""
+        instance = await self.get_instance(instance_id)
+        if not instance:
+            raise RuntimeError(f"Instance {instance_id} not found")
+
+        if instance.status != ProviderStatus.RUNNING:
+            raise RuntimeError(f"Instance {instance_id} is not running")
+
+        ssh_cmd = self._build_ssh_cmd(
+            instance.ssh_host, instance.ssh_port, instance.ssh_user, command, timeout
         )
 
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return -1, "", "Command timed out"
+        last_error = ""
+        for attempt in range(SSH_MAX_RETRIES):
+            logger.debug(
+                "Executing SSH command",
+                host=instance.ssh_host,
+                command=command[:50],
+                attempt=attempt + 1,
+            )
 
-        return proc.returncode or 0, stdout.decode(), stderr.decode()
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return -1, "", "Command timed out"
+
+            returncode = proc.returncode or 0
+            stderr_str = stderr.decode()
+
+            # SSH connection errors warrant a retry; command failures do not
+            if returncode == 255 and attempt < SSH_MAX_RETRIES - 1:
+                # Exit code 255 = SSH connection failure
+                backoff = SSH_RETRY_BACKOFF[min(attempt, len(SSH_RETRY_BACKOFF) - 1)]
+                last_error = stderr_str
+                logger.warning(
+                    "SSH connection failed, retrying",
+                    host=instance.ssh_host,
+                    attempt=attempt + 1,
+                    backoff=backoff,
+                    error=stderr_str[:100],
+                )
+                await asyncio.sleep(backoff)
+                continue
+
+            return returncode, stdout.decode(), stderr_str
+
+        # All retries exhausted
+        return 255, "", f"SSH connection failed after {SSH_MAX_RETRIES} attempts: {last_error}"
 
     async def rsync_download(
         self,
@@ -431,18 +518,26 @@ class VastProvider(CloudProvider):
 
         logger.info("Running rsync download", remote=remote_path, local=local_path)
 
-        proc = await asyncio.create_subprocess_exec(
-            *rsync_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
+        for attempt in range(SSH_MAX_RETRIES):
+            proc = await asyncio.create_subprocess_exec(
+                *rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
 
-        if proc.returncode != 0:
-            logger.error("Rsync failed", error=stderr.decode())
-            return False
+            if proc.returncode == 0:
+                return True
 
-        return True
+            stderr_str = stderr.decode()
+            if attempt < SSH_MAX_RETRIES - 1:
+                backoff = SSH_RETRY_BACKOFF[min(attempt, len(SSH_RETRY_BACKOFF) - 1)]
+                logger.warning("Rsync download failed, retrying", attempt=attempt + 1, backoff=backoff, error=stderr_str[:100])
+                await asyncio.sleep(backoff)
+            else:
+                logger.error("Rsync download failed after retries", error=stderr_str)
+
+        return False
 
     async def rsync_upload(
         self,
@@ -488,15 +583,23 @@ class VastProvider(CloudProvider):
 
         logger.info("Running rsync upload", local=local_path, remote=remote_path)
 
-        proc = await asyncio.create_subprocess_exec(
-            *rsync_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
+        for attempt in range(SSH_MAX_RETRIES):
+            proc = await asyncio.create_subprocess_exec(
+                *rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
 
-        if proc.returncode != 0:
-            logger.error("Rsync failed", error=stderr.decode())
-            return False
+            if proc.returncode == 0:
+                return True
 
-        return True
+            stderr_str = stderr.decode()
+            if attempt < SSH_MAX_RETRIES - 1:
+                backoff = SSH_RETRY_BACKOFF[min(attempt, len(SSH_RETRY_BACKOFF) - 1)]
+                logger.warning("Rsync upload failed, retrying", attempt=attempt + 1, backoff=backoff, error=stderr_str[:100])
+                await asyncio.sleep(backoff)
+            else:
+                logger.error("Rsync upload failed after retries", error=stderr_str)
+
+        return False
