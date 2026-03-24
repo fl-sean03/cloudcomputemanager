@@ -151,7 +151,7 @@ async def submit_job(
     # Parse configuration
     image = config.get("image", "vastai/pytorch:latest")
     command = config.get("command", "")
-    setup_commands = config.get("setup")  # New: setup script before job
+    setup_commands = config.get("setup")  # Setup script before job
     resources = config.get("resources", {})
     checkpoint_config = config.get("checkpoint", {})
     sync_config = config.get("sync", {})
@@ -161,6 +161,57 @@ async def submit_job(
     progress_config = config.get("progress", {})
     notifications = config.get("notifications", {})
     provisioning_timeout = config.get("provisioning", {}).get("timeout", 300)
+
+    # Parse environment configuration (if specified)
+    from cloudcomputemanager.core.environment import (
+        parse_environment, validate_environment, get_setup_commands,
+        get_command_prefix, get_upload_files, get_recommended_timeout,
+    )
+
+    env_config = parse_environment(config)
+    env_upload_files = []
+
+    if env_config:
+        # Validate environment
+        env_errors = validate_environment(env_config)
+        if env_errors:
+            for err in env_errors:
+                if not quiet:
+                    console.print(f"[red]Environment error: {err}[/red]")
+                else:
+                    logger.error("Environment error", error=err)
+            return
+
+        # Override image if docker_image strategy
+        if env_config.docker_image:
+            image = env_config.docker_image
+
+        # Merge environment setup commands with user setup commands
+        env_setup = get_setup_commands(env_config)
+        if env_setup and setup_commands:
+            setup_commands = env_setup + "\n" + setup_commands
+        elif env_setup:
+            setup_commands = env_setup
+
+        # Prepend activation to job command
+        prefix = get_command_prefix(env_config)
+        if prefix and command:
+            command = prefix + command
+
+        # Collect environment files to upload
+        env_upload_files = get_upload_files(env_config)
+
+        # Use recommended timeout if user did not specify one
+        user_timeout = config.get("provisioning", {}).get("timeout")
+        if not user_timeout:
+            recommended = get_recommended_timeout(env_config)
+            if recommended > provisioning_timeout:
+                provisioning_timeout = recommended
+
+        if not quiet:
+            console.print(f"  Environment: {env_config.strategy.value}")
+        else:
+            logger.info("Environment configured", strategy=env_config.strategy.value)
 
     # Initialize database
     await init_db()
@@ -307,6 +358,48 @@ async def submit_job(
             console.print("[green]Files uploaded successfully![/green]")
         else:
             logger.info("Files uploaded successfully")
+
+    # Upload environment files (conda-pack, env.yml, requirements.txt)
+    if env_upload_files:
+        for local_file, remote_file in env_upload_files:
+            local_path = Path(local_file)
+            if not local_path.exists():
+                error_msg = f"Environment file not found: {local_path}"
+                if not quiet:
+                    console.print(f"[red]{error_msg}[/red]")
+                else:
+                    logger.error(error_msg)
+                await provider.terminate_instance(instance.instance_id)
+                return
+
+            if not quiet:
+                size_mb = local_path.stat().st_size / (1024 * 1024)
+                console.print(f"[bold]Uploading environment:[/bold] {local_path.name} ({size_mb:.1f} MB)")
+                with console.status("Uploading environment file..."):
+                    upload_ok = await provider.rsync_upload(
+                        instance.instance_id,
+                        str(local_path),
+                        remote_file,
+                    )
+            else:
+                logger.info("Uploading environment file", file=local_file, dest=remote_file)
+                upload_ok = await provider.rsync_upload(
+                    instance.instance_id,
+                    str(local_path),
+                    remote_file,
+                )
+
+            if not upload_ok:
+                error_msg = f"Failed to upload environment file: {local_path.name}"
+                if not quiet:
+                    console.print(f"[red]{error_msg}[/red]")
+                else:
+                    logger.error(error_msg)
+                await provider.terminate_instance(instance.instance_id)
+                return
+
+        if not quiet:
+            console.print("[green]Environment files uploaded.[/green]")
 
     # Create job record
     import json
