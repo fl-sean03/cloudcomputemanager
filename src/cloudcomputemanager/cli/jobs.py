@@ -170,6 +170,7 @@ async def submit_job(
 
     env_config = parse_environment(config)
     env_upload_files = []
+    env_post_upload_setup = ""  # Setup commands that run AFTER file upload (via SSH)
 
     if env_config:
         # Validate environment
@@ -186,12 +187,12 @@ async def submit_job(
         if env_config.docker_image:
             image = env_config.docker_image
 
-        # Merge environment setup commands with user setup commands
-        env_setup = get_setup_commands(env_config)
-        if env_setup and setup_commands:
-            setup_commands = env_setup + "\n" + setup_commands
-        elif env_setup:
-            setup_commands = env_setup
+        # Environment setup commands run AFTER file upload (not in onstart).
+        # This is because strategies like conda_pack need files uploaded first.
+        env_post_upload_setup = get_setup_commands(env_config)
+
+        # User setup commands still go in onstart (they don't depend on uploaded files)
+        # Do NOT merge env setup into setup_commands
 
         # Prepend activation to job command
         prefix = get_command_prefix(env_config)
@@ -404,6 +405,39 @@ async def submit_job(
 
         if not quiet:
             console.print("[green]Environment files uploaded.[/green]")
+
+    # Run environment setup commands via SSH (after file upload)
+    if env_post_upload_setup:
+        if not quiet:
+            console.print("[bold]Setting up environment...[/bold]")
+            with console.status("Running environment setup..."):
+                # Convert multiline to single command with && chaining
+                setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
+                setup_cmd = " && ".join(setup_lines)
+                exit_code, stdout, stderr = await provider.execute_command(
+                    instance.instance_id, setup_cmd, timeout=600,
+                )
+        else:
+            setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
+            setup_cmd = " && ".join(setup_lines)
+            logger.info("Running environment setup", command=setup_cmd[:80])
+            exit_code, stdout, stderr = await provider.execute_command(
+                instance.instance_id, setup_cmd, timeout=600,
+            )
+
+        if exit_code != 0:
+            error_msg = f"Environment setup failed (exit {exit_code}): {stderr[:200]}"
+            if not quiet:
+                console.print(f"[red]{error_msg}[/red]")
+            else:
+                logger.error(error_msg)
+            await provider.terminate_instance(instance.instance_id)
+            return
+
+        if not quiet:
+            console.print("[green]Environment ready![/green]")
+        else:
+            logger.info("Environment setup complete")
 
     # Create job record
     import json
