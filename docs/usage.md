@@ -330,6 +330,86 @@ Live updates via Server-Sent Events — no manual refresh needed. Actions (cance
 | `jupyter-dev` | Jupyter | RTX_3060 | No | Interactive dev |
 | `llm-inference` | vLLM | RTX_4090 | No | LLM serving |
 
+## Environment Management
+
+CCM supports deploying complex software environments to cloud instances via the
+`environment:` field in job YAML. Five strategies are supported, auto-selected
+by priority:
+
+| Strategy | Field | Setup Time | Best For |
+|----------|-------|-----------|----------|
+| Docker image | `docker_image:` | <1 min | Pre-built images |
+| Conda pack | `conda_pack:` | 1-2 min | Complex conda envs (OpenMM, LAMMPS) |
+| Conda env file | `conda_env:` | 5-15 min | Reproducibility from environment.yml |
+| Inline packages | `packages:` | 5-15 min | Simple package lists |
+| Requirements | `requirements:` | 2-5 min | pip-only projects |
+
+### Example: Conda Pack (Recommended for Complex Environments)
+
+```bash
+# 1. Create pack from local conda environment
+conda activate myenv
+conda install conda-pack
+conda-pack -n myenv -o myenv.tar.gz
+
+# 2. Reference in job YAML
+# environment:
+#   conda_pack: ./myenv.tar.gz
+
+# 3. Submit
+ccm jobs submit job.yaml
+```
+
+### Example: Inline Packages
+
+```yaml
+environment:
+  packages:
+    apt:
+      - libfftw3-dev
+    conda:
+      - openmm
+      - openmmtools
+    pip:
+      - alchemlyb
+  channels: ["conda-forge"]
+```
+
+### Example: Docker Image Override
+
+```yaml
+environment:
+  docker_image: myuser/openmm-cuda12:latest
+```
+
+### How It Works
+
+1. Instance boots with base Docker image
+2. User setup commands run via onstart (basic apt/pip)
+3. Instance becomes SSH-ready, CCM detects sentinel
+4. Regular files uploaded (scripts, input data)
+5. Environment files uploaded (conda-pack tarball, env.yml)
+6. Environment setup runs via SSH (unpack, conda create, etc.)
+7. Job wrapper deployed with activation prefix
+8. Job runs in the configured environment
+
+### CLI Commands
+
+```bash
+ccm env export -n myenv -o environment.yml   # Export conda env
+ccm env pack -n myenv -o env.tar.gz          # Create conda-pack tarball
+ccm env list                                  # List local conda envs
+```
+
+### Implementation
+
+- `core/environment.py` — Parsing, validation, setup command generation
+- `cli/environments.py` — CLI commands for export, pack, list
+- `cli/jobs.py` — Integration into submit flow
+- `docs/ENVIRONMENT_DESIGN.md` — Full design document with future plans
+
+---
+
 ## Key Files for Development
 
 | File | What It Controls |
@@ -337,9 +417,12 @@ Live updates via Server-Sent Events — no manual refresh needed. Actions (cance
 | `core/models.py` | All data models — Job fields, enums, CostRecord |
 | `core/wrapper.py` | SIGTERM-aware wrapper (single source, used by 3 call sites) |
 | `core/templates.py` | YAML loading, template merging, `${VAR}` substitution |
+| `core/environment.py` | Environment parsing, validation, setup command generation |
 | `daemon/monitor.py` | Main loop: completion, health, stages, progress, notifications, budget |
-| `cli/jobs.py` | Job submission flow, wait, reconnect, recover |
+| `cli/jobs.py` | Job submission flow (with environment integration), wait, reconnect |
 | `cli/batch.py` | Matrix expansion + parallel batch submission |
+| `cli/environments.py` | `ccm env` commands: export, pack, list |
 | `providers/vast.py` | Vast.ai integration: SSH retry, rsync, onstart, heartbeat |
+| `providers/base.py` | CloudProvider ABC, wait_for_ready (with setup sentinel check) |
 | `agents/sdk.py` | CloudComputeManagerAgent — async Python API for agents |
 | `benchmarks/engine.py` | Benchmark orchestration across GPU tiers |
