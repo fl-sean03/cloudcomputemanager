@@ -631,6 +631,14 @@ class JobMonitor:
         """
         logger.info("Reconciling stale jobs after daemon restart")
 
+        # First, sync all instances from provider to populate Instance table
+        try:
+            from cloudcomputemanager.core.instances import sync_all_instances
+            stats = await sync_all_instances(self.provider)
+            logger.info("Instance sync on startup", **stats)
+        except Exception as e:
+            logger.warning("Instance sync failed on startup", error=str(e))
+
         async with get_session() as session:
             stmt = select(Job).where(
                 Job.status.in_([JobStatus.RUNNING, JobStatus.CHECKPOINTING])
@@ -695,8 +703,21 @@ class JobMonitor:
 
         self._last_recovery_check = 0
 
+        self._last_instance_sync: float = 0
+
         while self._running:
             try:
+                # Sync all instances from provider every 60s
+                # This discovers instances created outside CCM and detects terminated ones
+                now = asyncio.get_event_loop().time()
+                if now - self._last_instance_sync > 60:
+                    try:
+                        from cloudcomputemanager.core.instances import sync_all_instances
+                        await sync_all_instances(self.provider)
+                        self._last_instance_sync = now
+                    except Exception as e:
+                        logger.debug("Instance sync failed", error=str(e))
+
                 # Get running jobs
                 async with get_session() as session:
                     stmt = select(Job).where(

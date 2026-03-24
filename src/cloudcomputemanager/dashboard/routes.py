@@ -54,6 +54,15 @@ def _daemon_context() -> dict:
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     """Render the full dashboard page."""
+    # Sync instances from Vast.ai API on every full page load
+    # This ensures the dashboard has up-to-date instance data even without the daemon
+    try:
+        from cloudcomputemanager.core.instances import sync_all_instances
+        from cloudcomputemanager.providers.vast import VastProvider
+        await sync_all_instances(VastProvider())
+    except Exception:
+        pass  # Non-fatal — dashboard still shows whatever is in DB
+
     summary = await get_dashboard_summary()
     jobs = await get_active_jobs()
     events = await get_recent_events()

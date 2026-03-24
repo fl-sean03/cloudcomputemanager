@@ -271,6 +271,10 @@ async def submit_job(
         logger.info("Creating instance", offer_id=best.offer_id, image=image, has_setup=bool(setup_commands))
         instance = await provider.create_instance(**create_kwargs)
 
+    # Save Instance record to database
+    from cloudcomputemanager.core.instances import upsert_instance
+    await upsert_instance(instance)
+
     if not quiet:
         console.print(f"\n[green]Instance created:[/green] {instance.instance_id}")
         console.print(f"  SSH: ssh -p {instance.ssh_port} {instance.ssh_user}@{instance.ssh_host}")

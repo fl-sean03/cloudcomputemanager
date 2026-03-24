@@ -365,6 +365,10 @@ class CloudComputeManagerAgent:
             disk_gb=spec.disk_gb,
         )
 
+        # Save Instance record to database
+        from cloudcomputemanager.core.instances import upsert_instance
+        await upsert_instance(instance)
+
         self._emit_event(AgentEvent(
             type=EventType.INSTANCE_CREATED,
             timestamp=datetime.utcnow(),
