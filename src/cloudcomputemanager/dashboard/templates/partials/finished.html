@@ -1,0 +1,52 @@
+{% if finished %}
+<table role="grid">
+    <thead>
+        <tr>
+            <th>Status</th>
+            <th>Project</th>
+            <th>Name</th>
+            <th>Exit Code</th>
+            <th>GPU</th>
+            <th>$/hr</th>
+            <th>Cost</th>
+            <th>Runtime</th>
+            <th>Output</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in finished %}
+        <tr>
+            <td>
+                {% if job.status == 'COMPLETED' %}
+                <span class="badge badge-green">COMPLETED</span>
+                {% elif job.status == 'FAILED' %}
+                <span class="badge badge-red">FAILED</span>
+                {% elif job.status == 'CANCELLED' %}
+                <span class="badge badge-gray">CANCELLED</span>
+                {% elif job.status == 'BUDGET_EXCEEDED' %}
+                <span class="badge badge-orange">BUDGET_EXCEEDED</span>
+                {% else %}
+                <span class="badge badge-gray">{{ job.status }}</span>
+                {% endif %}
+            </td>
+            <td>{{ job.project }}</td>
+            <td>{{ job.name }}</td>
+            <td>{{ job.exit_code if job.exit_code is not none else "--" }}</td>
+            <td>{{ job.gpu_type or "--" }}</td>
+            <td>{{ "$%.2f"|format(job.hourly_rate) if job.hourly_rate else "--" }}</td>
+            <td>${{ "%.2f"|format(job.total_cost_usd) }}</td>
+            <td>{{ job.runtime_display }}</td>
+            <td>
+                {% if job.output_location %}
+                <code title="{{ job.output_location }}">{{ job.output_location | truncate(30) }}</code>
+                {% else %}
+                --
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty-state">No recently finished jobs</p>
+{% endif %}

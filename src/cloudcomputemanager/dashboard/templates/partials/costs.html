@@ -1,0 +1,61 @@
+<h4>Cost Breakdown (7d)</h4>
+{% if costs and costs.by_project %}
+<table role="grid">
+    <thead>
+        <tr>
+            <th>Project</th>
+            <th>Jobs</th>
+            <th>Cost</th>
+            <th>GPU Hours</th>
+            <th>$/hr</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in costs.by_project %}
+        <tr>
+            <td>{{ row.project }}</td>
+            <td>{{ row.job_count }}</td>
+            <td>${{ "%.2f"|format(row.cost) }}</td>
+            <td>{{ "%.1f"|format(row.gpu_hours) }}</td>
+            <td>${{ "%.2f"|format(row.cost_per_hour) }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="total-row">
+            <td><strong>Total</strong></td>
+            <td></td>
+            <td><strong>${{ "%.2f"|format(costs.total_cost) }}</strong></td>
+            <td><strong>{{ "%.1f"|format(costs.total_hours) }}</strong></td>
+            <td></td>
+        </tr>
+    </tbody>
+</table>
+
+{% if costs.by_gpu %}
+<h5>By GPU Type</h5>
+<table role="grid">
+    <thead>
+        <tr>
+            <th>GPU Type</th>
+            <th>Cost</th>
+            <th>%</th>
+            <th>Hours</th>
+            <th>Avg $/hr</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in costs.by_gpu %}
+        <tr>
+            <td>{{ row.gpu_type }}</td>
+            <td>${{ "%.2f"|format(row.cost) }}</td>
+            <td>{{ "%.0f"|format(row.percentage) }}%</td>
+            <td>{{ "%.1f"|format(row.hours) }}</td>
+            <td>${{ "%.2f"|format(row.avg_rate) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% else %}
+<p class="empty-state">No cost data</p>
+{% endif %}

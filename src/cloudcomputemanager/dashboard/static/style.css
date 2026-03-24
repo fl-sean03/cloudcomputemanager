@@ -1,0 +1,320 @@
+/* CCM Dashboard — Custom styles (works with Pico CSS) */
+
+/* ===== Status badges ===== */
+.status-running { color: #22c55e; }
+.status-provisioning { color: #eab308; }
+.status-recovering { color: #f97316; }
+.status-completed { color: #22c55e; }
+.status-failed { color: #ef4444; }
+.status-cancelled { color: #6b7280; }
+
+/* ===== Summary cards ===== */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin: 1rem 0;
+}
+
+.stat-card {
+    text-align: center;
+    padding: 1rem;
+}
+
+.stat-card .big-number {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.stat-card .label {
+    font-size: 0.85rem;
+    opacity: 0.7;
+}
+
+.stat-card .stat-detail {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    margin-top: 0.25rem;
+}
+
+/* ===== Alert banner ===== */
+.alerts-container {
+    margin: 0.5rem 0;
+}
+
+.alert {
+    padding: 0.5rem 1rem;
+    margin: 0.25rem 0;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.alert-red {
+    border-left: 4px solid #ef4444;
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+.alert-yellow {
+    border-left: 4px solid #eab308;
+    background: #fefce8;
+    color: #854d0e;
+}
+
+.alert-blue {
+    border-left: 4px solid #3b82f6;
+    background: #eff6ff;
+    color: #1e40af;
+}
+
+.alert-icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.alert-message {
+    flex: 1;
+}
+
+.alert-action {
+    font-size: 0.8rem;
+    opacity: 0.7;
+}
+
+/* ===== Progress bar ===== */
+.progress-bar {
+    width: 100%;
+    height: 18px;
+    background: #e5e7eb;
+    border-radius: 9px;
+    overflow: hidden;
+    display: inline-block;
+    min-width: 60px;
+}
+
+.progress-fill {
+    height: 100%;
+    border-radius: 9px;
+    background: #22c55e;
+    transition: width 0.3s;
+}
+
+/* ===== Compact table ===== */
+table {
+    font-size: 0.875rem;
+}
+
+td, th {
+    padding: 0.4rem 0.6rem;
+}
+
+.total-row {
+    border-top: 2px solid var(--pico-muted-border-color, #d1d5db);
+}
+
+/* ===== Action buttons ===== */
+.btn-sm {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border: 1px solid var(--pico-muted-border-color, #d1d5db);
+    border-radius: 3px;
+    background: var(--pico-background-color, #fff);
+    color: var(--pico-color, #374151);
+    margin: 0 1px;
+}
+
+.btn-sm:hover {
+    background: var(--pico-muted-border-color, #e5e7eb);
+}
+
+.btn-sm.btn-danger {
+    color: #ef4444;
+    border-color: #fca5a5;
+}
+
+.btn-sm.btn-danger:hover {
+    background: #fef2f2;
+}
+
+.actions-cell {
+    white-space: nowrap;
+}
+
+/* ===== Two-column layout ===== */
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+/* ===== Sync badges ===== */
+.badge {
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.badge-green {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.badge-blue {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.badge-red {
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+.badge-gray {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+.badge-orange {
+    background: #fff7ed;
+    color: #9a3412;
+}
+
+/* ===== Header ===== */
+.dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--pico-background-color, #fff);
+    border-bottom: 1px solid var(--pico-muted-border-color, #e5e7eb);
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.header-version {
+    font-size: 0.8rem;
+    opacity: 0.6;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.header-status {
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+.daemon-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.daemon-running {
+    background: #22c55e;
+}
+
+.daemon-stopped {
+    background: #ef4444;
+}
+
+/* ===== Events feed ===== */
+.events-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.event-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--pico-muted-border-color, #f3f4f6);
+}
+
+.event-time {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    min-width: 5em;
+}
+
+.event-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.event-job {
+    font-weight: 500;
+}
+
+.event-detail {
+    opacity: 0.7;
+    font-size: 0.8rem;
+}
+
+/* ===== Job detail expansion ===== */
+.job-detail {
+    padding: 0.5rem 1rem;
+    background: var(--pico-card-background-color, #f9fafb);
+    border-radius: 4px;
+    margin: 0.25rem 0;
+}
+
+.detail-table {
+    font-size: 0.8rem;
+}
+
+.detail-table th {
+    font-weight: 600;
+    white-space: nowrap;
+    opacity: 0.7;
+    width: 120px;
+}
+
+.detail-table code {
+    font-size: 0.75rem;
+    word-break: break-all;
+}
+
+/* ===== Empty state ===== */
+.empty-state {
+    text-align: center;
+    padding: 2rem;
+    opacity: 0.5;
+    font-style: italic;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .two-col {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-header {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+}

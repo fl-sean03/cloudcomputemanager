@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CCM Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/static/pico.min.css">
+    <link rel="stylesheet" href="/dashboard/static/style.css">
+    <script src="/dashboard/static/htmx.min.js"></script>
+</head>
+<body>
+    <header class="dashboard-header">
+        <div class="header-left">
+            <strong>CCM Dashboard</strong>
+            <span class="header-version">v{{ version }}</span>
+        </div>
+        <div class="header-right header-status">
+            Daemon:
+            <span class="daemon-dot {% if daemon_status == 'running' %}daemon-running{% else %}daemon-stopped{% endif %}"></span>
+            {{ daemon_status | upper }}
+            &nbsp;|&nbsp;
+            Last poll: {{ daemon_last_poll }}s ago
+            &nbsp;|&nbsp;
+            <button class="btn-sm" onclick="location.reload()">Refresh</button>
+        </div>
+    </header>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

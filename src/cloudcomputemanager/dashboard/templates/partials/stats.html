@@ -1,0 +1,28 @@
+<div class="stats-grid">
+    <article class="stat-card">
+        <div class="big-number">{{ summary.active_jobs }}</div>
+        <div class="label">Active Jobs</div>
+        <div class="stat-detail">
+            {% if summary.active_breakdown %}
+            {% for status, count in summary.active_breakdown.items() %}
+            {{ count }} {{ status }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            {% endif %}
+        </div>
+    </article>
+    <article class="stat-card">
+        <div class="big-number">${{ "%.2f"|format(summary.today_spend) }}</div>
+        <div class="label">Today's Spend</div>
+        <div class="stat-detail">${{ "%.2f"|format(summary.burn_rate) }}/hr burn rate</div>
+    </article>
+    <article class="stat-card">
+        <div class="big-number">${{ "%.2f"|format(summary.week_spend) }}</div>
+        <div class="label">Week Spend (7d)</div>
+        <div class="stat-detail">{{ summary.week_projects }} project{{ 's' if summary.week_projects != 1 }}</div>
+    </article>
+    <article class="stat-card">
+        <div class="big-number">{{ summary.recoveries_24h }}</div>
+        <div class="label">Recoveries (24h)</div>
+        <div class="stat-detail">{{ summary.recoveries_ok }} ok / {{ summary.recoveries_failed }} failed</div>
+    </article>
+</div>

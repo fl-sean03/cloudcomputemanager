@@ -886,6 +886,44 @@ def benchmark_results(
 
 
 # ============================================================================
+# Dashboard Command
+# ============================================================================
+
+
+@app.command("dashboard")
+def dashboard(
+    port: int = typer.Option(8765, "--port", "-p", help="Port to serve on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open browser automatically"),
+):
+    """Open the CCM web dashboard in your browser.
+
+    Shows all jobs, costs, events, and alerts in a single-page view
+    with live updates. Reads from the same database as the daemon.
+
+    Examples:
+        ccm dashboard                    # Open dashboard on port 8765
+        ccm dashboard --port 9000        # Custom port
+        ccm dashboard --no-browser       # Start server without opening browser
+    """
+    import threading
+    import webbrowser
+    import uvicorn
+
+    from cloudcomputemanager.api.app import create_app
+
+    url = f"http://localhost:{port}/dashboard"
+    console.print(f"\n[bold]Starting CCM Dashboard[/bold]")
+    console.print(f"  URL: {url}")
+    console.print(f"  Press Ctrl+C to stop\n")
+
+    if not no_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    dashboard_app = create_app()
+    uvicorn.run(dashboard_app, host="0.0.0.0", port=port, log_level="warning")
+
+
+# ============================================================================
 # PackStore Commands
 # ============================================================================
 

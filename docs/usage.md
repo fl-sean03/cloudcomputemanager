@@ -301,6 +301,24 @@ ccm batch wait --project pt-catalysis
 # ccm reconnect and ccm daemon check ALL projects — correct behavior
 ```
 
+## Dashboard
+
+```bash
+ccm dashboard                    # Open web dashboard on port 8765
+ccm dashboard --port 9000        # Custom port
+ccm dashboard --no-browser       # Start without opening browser
+```
+
+The dashboard shows a single-page view at `http://localhost:8765/dashboard` with:
+- **Alert banner** — failed jobs, stalled progress, budget warnings
+- **Summary cards** — active jobs, today's spend, weekly spend, recoveries
+- **Active jobs table** — status, project, progress bars, rate, ETA, cost, sync status, action buttons
+- **Events feed** — completions, failures, preemptions, syncs from the last 24h
+- **Cost breakdown** — per-project and per-GPU-type aggregation
+- **Finished jobs** — collapsible section for recently completed jobs
+
+Live updates via Server-Sent Events — no manual refresh needed. Actions (cancel, sync, view logs) available directly from the table. Reads from the same SQLite database as the daemon.
+
 ## Built-in Templates
 
 | Name | Image | GPU | Checkpoint | Use Case |

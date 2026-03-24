@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div hx-ext="sse" sse-connect="/dashboard/sse">
+
+    {# Section 1: Alert Banner — auto-refreshes via SSE #}
+    <div id="alerts" sse-swap="alerts" hx-swap="innerHTML">
+        {% include "partials/alerts.html" %}
+    </div>
+
+    {# Section 2: Summary Cards — auto-refreshes via SSE #}
+    <div id="stats" sse-swap="stats" hx-swap="innerHTML">
+        {% include "partials/stats.html" %}
+    </div>
+
+    {# Section 3: Active Jobs Table — auto-refreshes via SSE #}
+    <div id="jobs" sse-swap="jobs" hx-swap="innerHTML">
+        {% include "partials/jobs_table.html" %}
+    </div>
+
+    {# Section 4: Two-column grid — Events (10s poll) + Costs (30s poll) #}
+    <div class="two-col">
+        <div id="events" hx-get="/dashboard/partials/events" hx-trigger="every 10s" hx-swap="innerHTML">
+            {% include "partials/events.html" %}
+        </div>
+        <div id="costs" hx-get="/dashboard/partials/costs" hx-trigger="every 30s" hx-swap="innerHTML">
+            {% include "partials/costs.html" %}
+        </div>
+    </div>
+
+    {# Section 5: Finished Jobs — collapsible #}
+    <details>
+        <summary>Recently Finished (24h): {{ finished|length }} jobs</summary>
+        <div id="finished" hx-get="/dashboard/partials/finished" hx-trigger="every 30s" hx-swap="innerHTML">
+            {% include "partials/finished.html" %}
+        </div>
+    </details>
+
+</div>
+
+{% endblock %}

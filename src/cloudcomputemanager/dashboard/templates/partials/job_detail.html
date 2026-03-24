@@ -1,0 +1,46 @@
+<div class="job-detail">
+    <table class="detail-table">
+        <tr>
+            <th>Instance ID</th>
+            <td>{{ job.instance_id or "--" }}</td>
+            <th>SSH Command</th>
+            <td><code>ssh -p {{ job.ssh_port }} root@{{ job.ssh_host }}</code></td>
+        </tr>
+        <tr>
+            <th>Image</th>
+            <td colspan="3">{{ job.image or "--" }}</td>
+        </tr>
+        <tr>
+            <th>Command</th>
+            <td colspan="3"><code>{{ job.command or "--" }}</code></td>
+        </tr>
+        {% if job.setup_commands %}
+        <tr>
+            <th>Setup Commands</th>
+            <td colspan="3">
+                {% for cmd in job.setup_commands %}
+                <code>{{ cmd }}</code>{% if not loop.last %}<br>{% endif %}
+                {% endfor %}
+            </td>
+        </tr>
+        {% endif %}
+        <tr>
+            <th>Budget Usage</th>
+            <td>${{ "%.2f"|format(job.cost_so_far) }} / ${{ "%.2f"|format(job.budget_usd) if job.budget_usd else "unlimited" }}</td>
+            <th>Attempt</th>
+            <td>{{ job.attempt_number + 1 }} ({{ job.attempt_number }} recover{{ 'ies' if job.attempt_number != 1 else 'y' }})</td>
+        </tr>
+        <tr>
+            <th>Checkpoint</th>
+            <td>{{ job.checkpoint_path or "none" }}</td>
+            <th>Heartbeat</th>
+            <td>{{ job.last_heartbeat or "--" }}</td>
+        </tr>
+        <tr>
+            <th>Started</th>
+            <td>{{ job.started_at or "--" }}</td>
+            <th>Runtime</th>
+            <td>{{ job.runtime_display }}</td>
+        </tr>
+    </table>
+</div>

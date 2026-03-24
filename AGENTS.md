@@ -111,6 +111,8 @@ src/cloudcomputemanager/
 - **`ccm reconnect`**: Rehydrates job state from instances after daemon downtime, syncs results
 - **Instance heartbeat**: Background loop writes `/workspace/.ccm_heartbeat` every 60s for liveness detection
 
+- **Web Dashboard**: `ccm dashboard` — single-page view of all jobs, costs, events, alerts with live SSE updates
+
 ## Remaining Limitations
 
 - Instance reuse across jobs not yet implemented — **Backlog**

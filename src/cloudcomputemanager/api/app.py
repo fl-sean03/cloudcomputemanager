@@ -60,6 +60,11 @@ def create_app() -> FastAPI:
     app.include_router(routes.checkpoints_router, prefix="/v1/checkpoints", tags=["Checkpoints"])
     app.include_router(routes.packages_router, prefix="/v1/packages", tags=["Packages"])
 
+    # Dashboard (web UI)
+    from cloudcomputemanager.dashboard import create_dashboard_router, mount_dashboard_static
+    app.include_router(create_dashboard_router(), tags=["Dashboard"])
+    mount_dashboard_static(app)
+
     return app
 
 

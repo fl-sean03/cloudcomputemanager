@@ -1,0 +1,15 @@
+<h4>Recent Events (24h)</h4>
+{% if events %}
+<div class="events-list">
+    {% for event in events %}
+    <div class="event-item">
+        <span class="event-time">{{ event.timestamp }}</span>
+        <span class="event-icon" style="color: {{ event.color }}">{{ event.icon }}</span>
+        <span class="event-job">{{ event.job_name }}</span>
+        <span class="event-detail">{{ event.detail }}</span>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No recent events</p>
+{% endif %}
