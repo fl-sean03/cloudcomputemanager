@@ -26,12 +26,12 @@ router = APIRouter()
 
 def _daemon_context() -> dict:
     """Get daemon status context for the header."""
+    from datetime import datetime
     try:
-        status = DaemonService.get_status()
-        if status and status.get("running"):
-            # Calculate seconds since last update
-            from datetime import datetime
-            ts = status.get("timestamp", "")
+        # Use is_running() (checks actual PID) not get_status() (reads stale file)
+        if DaemonService.is_running():
+            status = DaemonService.get_status()
+            ts = (status or {}).get("timestamp", "")
             if ts:
                 try:
                     last = datetime.fromisoformat(ts)
