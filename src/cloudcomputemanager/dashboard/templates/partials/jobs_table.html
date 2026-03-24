@@ -41,10 +41,14 @@
             </td>
             <td>{{ job.current_stage }}/{{ job.total_stages }}</td>
             <td>
+                {% if job.progress_percent is not none %}
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: {{ job.progress_percent }}%"></div>
                 </div>
-                <small>{{ job.progress_percent }}%</small>
+                <small>{{ "%.0f"|format(job.progress_percent) }}%</small>
+                {% else %}
+                <small>--</small>
+                {% endif %}
             </td>
             <td>{{ "%.1fk/s"|format(job.steps_per_second / 1000) if job.steps_per_second else "--" }}</td>
             <td>{{ "%.1fh"|format(job.estimated_hours_remaining) if job.estimated_hours_remaining else "--" }}</td>
