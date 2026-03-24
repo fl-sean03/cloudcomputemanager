@@ -212,3 +212,41 @@ async def sync_all_instances(provider) -> dict:
         logger.info("Instance sync complete", **stats)
 
     return stats
+
+
+async def terminate_instance_safe(provider, instance_id: str, max_retries: int = 3) -> bool:
+    """Terminate an instance with retries and verification.
+
+    Retries up to max_retries times, then verifies the instance is
+    actually gone from the provider. Updates Instance record in DB.
+
+    Returns True if instance is confirmed terminated, False otherwise.
+    """
+    import asyncio
+
+    for attempt in range(max_retries):
+        try:
+            await provider.terminate_instance(instance_id)
+            # Wait briefly, then verify
+            await asyncio.sleep(3)
+            inst = await provider.get_instance(instance_id)
+            if inst is None or inst.status in (ProviderStatus.TERMINATED, ProviderStatus.STOPPED):
+                # Confirmed terminated — update DB
+                async with get_session() as session:
+                    stmt = select(Instance).where(Instance.instance_id == instance_id)
+                    result = await session.execute(stmt)
+                    db_inst = result.scalar_one_or_none()
+                    if db_inst:
+                        db_inst.status = InstanceStatus.TERMINATED
+                        db_inst.terminated_at = datetime.utcnow()
+                        db_inst.health_status = "terminated"
+                        session.add(db_inst)
+                logger.info("Instance terminated and verified", instance_id=instance_id)
+                return True
+        except Exception as e:
+            logger.warning("Termination attempt failed",
+                           instance_id=instance_id, attempt=attempt + 1, error=str(e))
+            await asyncio.sleep(2)
+
+    logger.error("Failed to terminate instance after retries", instance_id=instance_id)
+    return False

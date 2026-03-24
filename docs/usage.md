@@ -277,10 +277,13 @@ budget:
 CCM uses a **single daemon, single database, single Vast.ai API key**. Multiple agents share this infrastructure safely. Isolation is via the `project` field.
 
 **Rules for agents:**
-1. **Always set a unique `project` name** in every job YAML
-2. **Always filter by your project** when listing/waiting: `ccm jobs list --project my-project`
-3. **The daemon monitors ALL jobs** — don't start your own daemon
-4. **Each job gets its own instance** — no resource conflicts
+1. **NEVER call `vastai` CLI directly** for creating or destroying instances. Always use `ccm jobs submit` to create and `ccm jobs cancel` to terminate. Going around CCM creates ghost instances that cost money and are invisible to monitoring.
+2. **Always set a unique `project` name** in every job YAML
+3. **Always filter by your project** when listing/waiting: `ccm jobs list --project my-project`
+4. **The daemon monitors ALL jobs** — don't start your own daemon
+5. **Each job gets its own instance** — no resource conflicts
+6. **For SSH/commands on a running instance**, use `ccm exec <job_id> "command"` or `ccm ssh <job_id>`. These are safe — they don't change infrastructure state.
+7. **If CCM lacks a capability you need**, ask the user rather than going around CCM
 
 ```yaml
 # Agent A (Amaxine project)
