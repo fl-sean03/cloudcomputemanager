@@ -259,7 +259,17 @@ class CloudProvider(ABC):
                 try:
                     exit_code, _, _ = await self.execute_command(instance_id, "echo ok", timeout=10)
                     if exit_code == 0:
-                        return True
+                        # Also check if setup has completed (sentinel file).
+                        # The onstart script touches /tmp/.ccm_setup_done after
+                        # all setup commands finish (pip install, apt install, etc.)
+                        setup_code, setup_out, _ = await self.execute_command(
+                            instance_id,
+                            "test -f /tmp/.ccm_setup_done && echo SETUP_DONE || echo SETUP_PENDING",
+                            timeout=10,
+                        )
+                        if "SETUP_DONE" in setup_out:
+                            return True
+                        # SSH works but setup not done yet, keep waiting
                 except Exception:
                     pass
             await asyncio.sleep(interval)
