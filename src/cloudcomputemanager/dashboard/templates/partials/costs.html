@@ -15,9 +15,9 @@
         <tr>
             <td>{{ row.project }}</td>
             <td>{{ row.job_count }}</td>
-            <td>${{ "%.2f"|format(row.cost) }}</td>
-            <td>{{ "%.1f"|format(row.gpu_hours) }}</td>
-            <td>${{ "%.2f"|format(row.cost_per_hour) }}</td>
+            <td>${{ "%.2f"|format(row.total_cost) }}</td>
+            <td>{{ "%.1f"|format(row.total_hours) }}</td>
+            <td>${{ "%.2f"|format(row.total_cost / row.total_hours) if row.total_hours > 0 else "--" }}</td>
         </tr>
         {% endfor %}
         <tr class="total-row">
@@ -46,10 +46,10 @@
         {% for row in costs.by_gpu %}
         <tr>
             <td>{{ row.gpu_type }}</td>
-            <td>${{ "%.2f"|format(row.cost) }}</td>
-            <td>{{ "%.0f"|format(row.percentage) }}%</td>
-            <td>{{ "%.1f"|format(row.hours) }}</td>
-            <td>${{ "%.2f"|format(row.avg_rate) }}</td>
+            <td>${{ "%.2f"|format(row.total_cost) }}</td>
+            <td>{{ "%.0f"|format(row.total_cost / costs.total_cost * 100) if costs.total_cost > 0 else 0 }}%</td>
+            <td>{{ "%.1f"|format(row.total_hours) }}</td>
+            <td>${{ "%.2f"|format(row.total_cost / row.total_hours) if row.total_hours > 0 else "--" }}</td>
         </tr>
         {% endfor %}
     </tbody>
