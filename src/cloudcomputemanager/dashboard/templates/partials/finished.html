@@ -17,16 +17,17 @@
         {% for job in finished %}
         <tr>
             <td>
-                {% if job.status == 'COMPLETED' %}
+                {% set s = job.status|upper %}
+                {% if s == 'COMPLETED' %}
                 <span class="badge badge-green">COMPLETED</span>
-                {% elif job.status == 'FAILED' %}
+                {% elif s == 'FAILED' %}
                 <span class="badge badge-red">FAILED</span>
-                {% elif job.status == 'CANCELLED' %}
+                {% elif s == 'CANCELLED' %}
                 <span class="badge badge-gray">CANCELLED</span>
-                {% elif job.status == 'BUDGET_EXCEEDED' %}
+                {% elif s == 'BUDGET_EXCEEDED' %}
                 <span class="badge badge-orange">BUDGET_EXCEEDED</span>
                 {% else %}
-                <span class="badge badge-gray">{{ job.status }}</span>
+                <span class="badge badge-gray">{{ job.status|upper }}</span>
                 {% endif %}
             </td>
             <td>{{ job.project }}</td>

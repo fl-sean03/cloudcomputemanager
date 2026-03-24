@@ -21,14 +21,17 @@
         {% for job in jobs %}
         <tr>
             <td>
-                {% if job.status == 'RUNNING' %}
+                {% set s = job.status|upper %}
+                {% if s == 'RUNNING' %}
                 <span class="status-running" title="Running">&#x25CF;</span>
-                {% elif job.status == 'PROVISIONING' %}
+                {% elif s == 'PROVISIONING' %}
                 <span class="status-provisioning" title="Provisioning">&#x25D0;</span>
-                {% elif job.status == 'RECOVERING' %}
+                {% elif s == 'RECOVERING' %}
                 <span class="status-recovering" title="Recovering">&#x25B2;</span>
-                {% elif job.status == 'CHECKPOINTING' %}
+                {% elif s == 'CHECKPOINTING' %}
                 <span class="status-provisioning" title="Checkpointing">&#x25D0;</span>
+                {% elif s == 'PENDING' %}
+                <span class="status-provisioning" title="Pending">&#x25CB;</span>
                 {% else %}
                 <span title="{{ job.status }}">&#x25CB;</span>
                 {% endif %}
