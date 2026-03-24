@@ -91,6 +91,7 @@ class ProviderInstance:
     jupyter_url: Optional[str] = None
     internal_ip: Optional[str] = None
     external_ip: Optional[str] = None
+    label: Optional[str] = None
 
 
 class CloudProvider(ABC):
@@ -140,6 +141,7 @@ class CloudProvider(ABC):
         ssh_public_key: Optional[str] = None,
         env_vars: Optional[dict[str, str]] = None,
         startup_script: Optional[str] = None,
+        label: Optional[str] = None,
     ) -> ProviderInstance:
         """Create a new instance from an offer.
 
@@ -150,6 +152,7 @@ class CloudProvider(ABC):
             ssh_public_key: SSH public key for access
             env_vars: Environment variables to set
             startup_script: Script to run on startup
+            label: Instance label for identification (e.g., ccm|job_id|project|name)
 
         Returns:
             The created instance

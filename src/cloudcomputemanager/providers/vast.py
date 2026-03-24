@@ -192,6 +192,7 @@ class VastProvider(CloudProvider):
         ssh_public_key: Optional[str] = None,
         env_vars: Optional[dict[str, str]] = None,
         startup_script: Optional[str] = None,
+        label: Optional[str] = None,
     ) -> ProviderInstance:
         """Create a new instance on Vast.ai."""
         logger.info("Creating instance", offer_id=offer_id, image=image, disk_gb=disk_gb)
@@ -210,6 +211,9 @@ class VastProvider(CloudProvider):
             "--disk", str(disk_gb),
             "--raw",
         ]
+
+        if label:
+            args.extend(["--label", label])
 
         if ssh_public_key:
             # Use --ssh for Vast.ai managed SSH key setup (uses registered SSH keys)
@@ -331,6 +335,7 @@ class VastProvider(CloudProvider):
             jupyter_url=jupyter_url,
             internal_ip=data.get("local_ipaddrs"),
             external_ip=data.get("public_ipaddr"),
+            label=data.get("label"),
         )
 
     async def get_instance(self, instance_id: str) -> Optional[ProviderInstance]:

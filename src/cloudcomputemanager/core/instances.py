@@ -17,6 +17,44 @@ from cloudcomputemanager.providers.base import ProviderInstance, ProviderStatus
 
 logger = structlog.get_logger(__name__)
 
+
+# ============================================================================
+# Label helpers
+# ============================================================================
+
+LABEL_PREFIX = "ccm"
+LABEL_SEP = "|"
+
+
+def build_instance_label(job_id: str, project: str = "", name: str = "") -> str:
+    """Build a structured label for Vast.ai instance identification.
+
+    Format: ccm|{job_id}|{project}|{name}
+    Max 120 chars to stay well under Vast.ai's 1024 limit.
+    """
+    project = (project or "none").replace(LABEL_SEP, "-")[:50]
+    name = (name or "unnamed").replace(LABEL_SEP, "-")[:50]
+    return f"{LABEL_PREFIX}{LABEL_SEP}{job_id}{LABEL_SEP}{project}{LABEL_SEP}{name}"
+
+
+def parse_instance_label(label: str) -> Optional[dict]:
+    """Parse a CCM label into components.
+
+    Returns None if not a CCM-managed label.
+    Returns {"job_id": str, "project": str|None, "name": str|None} on success.
+    """
+    if not label or not label.startswith(f"{LABEL_PREFIX}{LABEL_SEP}"):
+        return None
+    parts = label.split(LABEL_SEP)
+    if len(parts) < 2 or not parts[1]:
+        return None
+    return {
+        "job_id": parts[1],
+        "project": parts[2] if len(parts) > 2 else None,
+        "name": parts[3] if len(parts) > 3 else None,
+    }
+
+
 # Map provider status to our InstanceStatus enum
 _STATUS_MAP = {
     ProviderStatus.PENDING: InstanceStatus.CREATING,
@@ -121,14 +159,19 @@ async def sync_all_instances(provider) -> dict:
             result = await session.execute(stmt)
             existing = result.scalar_one_or_none()
 
-        # Find matching job by instance_id
+        # Find matching job — try label first (most reliable), then instance_id
         job_id = None
-        async with get_session() as session:
-            stmt = select(Job.job_id).where(Job.instance_id == pi.instance_id)
-            result = await session.execute(stmt)
-            row = result.first()
-            if row:
-                job_id = row[0]
+        label_data = parse_instance_label(getattr(pi, 'label', None))
+        if label_data:
+            job_id = label_data["job_id"]
+        else:
+            # Fallback: match by instance_id in Job table
+            async with get_session() as session:
+                stmt = select(Job.job_id).where(Job.instance_id == pi.instance_id)
+                result = await session.execute(stmt)
+                row = result.first()
+                if row:
+                    job_id = row[0]
 
         await upsert_instance(pi, job_id=job_id)
 
