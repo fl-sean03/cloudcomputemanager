@@ -1,0 +1,41 @@
+{% if unmanaged %}
+<div class="alert alert-yellow">
+    <h5>Unmanaged Instances ({{ unmanaged|length }})</h5>
+    <p style="margin:0 0 0.5rem 0; font-size:0.85rem; opacity:0.8">
+        These instances are on your Vast.ai account but were not created through CCM.
+        They are costing money. Use CCM to manage instances or terminate them below.
+    </p>
+    <table role="grid" style="margin:0">
+        <thead>
+            <tr>
+                <th>Instance ID</th>
+                <th>GPU</th>
+                <th>$/hr</th>
+                <th>Status</th>
+                <th>Uptime</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for inst in unmanaged %}
+            <tr>
+                <td><code>{{ inst.instance_id }}</code></td>
+                <td>{{ inst.gpu_type }}</td>
+                <td>${{ "%.3f"|format(inst.hourly_rate) }}</td>
+                <td>{{ inst.status }}</td>
+                <td>{{ inst.uptime }}</td>
+                <td>
+                    <button class="btn-sm btn-danger"
+                            hx-post="/dashboard/actions/cancel-instance/{{ inst.instance_id }}"
+                            hx-confirm="Terminate unmanaged instance {{ inst.instance_id }}?"
+                            hx-swap="none">Terminate</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p style="margin:0.5rem 0 0 0; font-size:0.85rem">
+        Total unmanaged cost: <strong>${{ "%.3f"|format(unmanaged|sum(attribute='hourly_rate')) }}/hr</strong>
+    </p>
+</div>
+{% endif %}

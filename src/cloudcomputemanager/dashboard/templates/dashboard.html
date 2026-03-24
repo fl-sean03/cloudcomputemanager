@@ -13,6 +13,11 @@
         {% include "partials/stats.html" %}
     </div>
 
+    {# Section 2.5: Unmanaged instances warning — polls every 30s #}
+    <div id="unmanaged" hx-get="/dashboard/partials/unmanaged" hx-trigger="every 30s" hx-swap="innerHTML">
+        {% include "partials/unmanaged.html" %}
+    </div>
+
     {# Section 3: Active Jobs Table — auto-refreshes via SSE #}
     <div id="jobs" sse-swap="jobs" hx-swap="innerHTML">
         {% include "partials/jobs_table.html" %}

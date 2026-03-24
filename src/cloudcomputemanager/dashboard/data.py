@@ -622,3 +622,49 @@ async def get_finished_jobs(hours: int = 24, limit: int = 50) -> list[dict]:
         pass  # graceful fallback
 
     return results
+
+
+# ============================================================================
+# 7. Unmanaged instances
+# ============================================================================
+
+
+async def get_unmanaged_instances() -> list[dict]:
+    """Return instances on the Vast.ai account with no CCM job association.
+
+    These are instances created outside CCM (directly via vastai CLI or web console)
+    that are costing money but not tracked by any CCM job.
+    """
+    results: list[dict] = []
+
+    try:
+        async with get_session() as session:
+            stmt = select(Instance).where(
+                Instance.job_id.is_(None),
+                Instance.status.in_([InstanceStatus.RUNNING, InstanceStatus.STARTING, InstanceStatus.CREATING]),
+            )
+            result = await session.execute(stmt)
+            instances = result.scalars().all()
+
+        now = datetime.utcnow()
+        for inst in instances:
+            elapsed = (now - inst.created_at).total_seconds() if inst.created_at else 0
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            uptime = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+
+            results.append({
+                "instance_id": inst.instance_id,
+                "gpu_type": inst.gpu_type,
+                "gpu_count": inst.gpu_count,
+                "hourly_rate": inst.hourly_rate,
+                "status": inst.status.value,
+                "ssh_host": inst.ssh_host,
+                "ssh_port": inst.ssh_port,
+                "uptime": uptime,
+            })
+
+    except Exception:
+        pass
+
+    return results

@@ -16,6 +16,7 @@ from cloudcomputemanager.dashboard.data import (
     get_dashboard_summary,
     get_finished_jobs,
     get_recent_events,
+    get_unmanaged_instances,
 )
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -69,6 +70,7 @@ async def dashboard_page(request: Request):
     costs = await get_cost_breakdown()
     alerts = await get_alerts()
     finished = await get_finished_jobs()
+    unmanaged = await get_unmanaged_instances()
 
     context = {
         "request": request,
@@ -80,6 +82,7 @@ async def dashboard_page(request: Request):
         "costs": costs,
         "alerts": alerts,
         "finished": finished,
+        "unmanaged": unmanaged,
     }
     return templates.TemplateResponse("dashboard.html", context)
 
@@ -108,6 +111,13 @@ async def jobs_partial(request: Request):
     """Return active jobs table HTML fragment."""
     jobs = await get_active_jobs()
     return templates.TemplateResponse("partials/jobs_table.html", {"request": request, "jobs": jobs})
+
+
+@router.get("/dashboard/partials/unmanaged", response_class=HTMLResponse)
+async def unmanaged_partial(request: Request):
+    """Return unmanaged instances warning HTML fragment."""
+    unmanaged = await get_unmanaged_instances()
+    return templates.TemplateResponse("partials/unmanaged.html", {"request": request, "unmanaged": unmanaged})
 
 
 @router.get("/dashboard/partials/events", response_class=HTMLResponse)
@@ -257,6 +267,35 @@ async def sync_job_action(job_id: str):
         return HTMLResponse("<span class='badge badge-green'>Synced</span>")
 
     return HTMLResponse("<span class='badge badge-red'>Failed</span>")
+
+
+@router.post("/dashboard/actions/cancel-instance/{instance_id}", response_class=HTMLResponse)
+async def cancel_instance_action(instance_id: str, request: Request):
+    """Terminate an unmanaged instance directly."""
+    from cloudcomputemanager.providers.vast import VastProvider
+    from cloudcomputemanager.core.database import get_session
+    from cloudcomputemanager.core.models import Instance, InstanceStatus
+    from sqlmodel import select
+
+    provider = VastProvider()
+    try:
+        await provider.terminate_instance(instance_id)
+        # Update DB record
+        async with get_session() as session:
+            stmt = select(Instance).where(Instance.instance_id == instance_id)
+            result = await session.execute(stmt)
+            inst = result.scalar_one_or_none()
+            if inst:
+                inst.status = InstanceStatus.TERMINATED
+                from datetime import datetime
+                inst.terminated_at = datetime.utcnow()
+                session.add(inst)
+    except Exception:
+        pass
+
+    # Return updated unmanaged section
+    unmanaged = await get_unmanaged_instances()
+    return templates.TemplateResponse("partials/unmanaged.html", {"request": request, "unmanaged": unmanaged})
 
 
 @router.get("/dashboard/actions/logs/{job_id}", response_class=HTMLResponse)
