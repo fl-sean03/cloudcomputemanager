@@ -256,11 +256,18 @@ async def submit_job(
     else:
         logger.info("Found offers", count=len(offers), best_gpu=best.gpu_type, best_price=best.hourly_rate)
 
+    # Generate job_id early so we can label the instance with it
+    from cloudcomputemanager.core.models import generate_id
+    from cloudcomputemanager.core.instances import build_instance_label
+    early_job_id = f"job_{generate_id()}"
+    instance_label = build_instance_label(early_job_id, config.get("project", ""), job_name)
+
     # Create instance (pass setup commands as startup_script if provided)
     create_kwargs = {
         "offer_id": best.offer_id,
         "image": image,
         "disk_gb": resources.get("disk_gb", 50),
+        "label": instance_label,
     }
     if setup_commands:
         create_kwargs["startup_script"] = setup_commands
@@ -415,7 +422,7 @@ async def submit_job(
                 setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
                 setup_cmd = " && ".join(setup_lines)
                 exit_code, stdout, stderr = await provider.execute_command(
-                    instance.instance_id, setup_cmd, timeout=600,
+                    instance.instance_id, setup_cmd, timeout=1200,
                 )
         else:
             setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
@@ -448,6 +455,7 @@ async def submit_job(
         effective_command = stages[0].get("command", command)
 
     job = Job(
+        job_id=early_job_id,
         name=job_name,
         project=config.get("project"),
         status=JobStatus.RUNNING,

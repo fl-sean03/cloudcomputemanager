@@ -174,9 +174,10 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
 
     if env.strategy == EnvironmentStrategy.CONDA_ENV:
         # Install miniconda and create environment from file
+        # Use curl (more widely available than wget on minimal Docker images)
         channels = " ".join(f"-c {c}" for c in env.channels)
         return "\n".join([
-            "wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh",
+            "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
             "bash /tmp/miniconda.sh -b -p /opt/conda > /dev/null 2>&1",
             "export PATH=/opt/conda/bin:$PATH",
             f"/opt/conda/bin/conda env create -f /workspace/.ccm_env.yml {channels} -q",
@@ -198,7 +199,7 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
             channels = " ".join(f"-c {c}" for c in env.channels)
             pkg_str = " ".join(conda_pkgs)
             commands.extend([
-                "wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh",
+                "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
                 "bash /tmp/miniconda.sh -b -p /opt/conda > /dev/null 2>&1",
                 "export PATH=/opt/conda/bin:$PATH",
                 f"/opt/conda/bin/conda install -y {channels} {pkg_str} -q",
