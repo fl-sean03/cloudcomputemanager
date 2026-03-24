@@ -28,9 +28,10 @@ class TestResources:
         """Test default resource values."""
         resources = Resources()
 
-        assert resources.gpu_type == "RTX_4090"
+        # gpu_type and gpu_memory_min default to None (no hardcoded defaults)
+        assert resources.gpu_type is None
         assert resources.gpu_count == 1
-        assert resources.gpu_memory_min == 16
+        assert resources.gpu_memory_min is None
         assert resources.cpu_cores == 8
         assert resources.memory_gb == 32
         assert resources.disk_gb == 50

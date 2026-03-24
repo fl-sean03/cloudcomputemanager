@@ -11,6 +11,34 @@ from cloudcomputemanager.core.config import Settings
 from cloudcomputemanager.core.database import get_engine, init_db
 
 
+def pytest_addoption(parser):
+    """Add command line options for integration tests."""
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run integration tests that hit real APIs (may cost money)",
+    )
+
+
+def pytest_configure(config):
+    """Configure pytest markers."""
+    config.addinivalue_line(
+        "markers", "integration: mark test as integration test (requires --run-integration)"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip integration tests unless --run-integration is passed."""
+    if config.getoption("--run-integration"):
+        return
+
+    skip_integration = pytest.mark.skip(reason="need --run-integration option to run")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     """Create event loop for async tests."""
@@ -33,10 +61,16 @@ def test_settings(tmp_path: Path) -> Settings:
 @pytest_asyncio.fixture
 async def test_db(test_settings: Settings) -> AsyncGenerator[None, None]:
     """Initialize test database."""
+    from cloudcomputemanager.core import database as db_module
+    # Reset global engine so tests get a fresh DB with current schema
+    db_module._engine = None
+    db_module._async_session_factory = None
     test_settings.ensure_directories()
     await init_db()
     yield
-    # Cleanup happens automatically with tmp_path
+    # Cleanup: close and reset engine
+    await db_module.close_db()
+    db_module._async_session_factory = None
 
 
 @pytest.fixture

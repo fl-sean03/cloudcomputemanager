@@ -24,7 +24,9 @@ class TestJobSpec:
         )
         assert spec.name == "test-job"
         assert spec.command == "echo hello"
-        assert spec.gpu_type == "RTX_4090"
+        # gpu_type defaults to None (any GPU) - not hardcoded
+        assert spec.gpu_type is None
+        assert spec.gpu_memory_min is None
         assert spec.checkpoint_enabled is True
 
     def test_custom_spec(self):

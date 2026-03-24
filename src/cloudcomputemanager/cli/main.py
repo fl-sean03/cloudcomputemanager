@@ -53,6 +53,19 @@ jobs_app = typer.Typer(help="Manage jobs")
 app.add_typer(jobs_app, name="jobs")
 
 
+def parse_set_variables(values: Optional[list[str]]) -> Optional[dict[str, str]]:
+    """Parse --set KEY=VALUE pairs into a dict."""
+    if not values:
+        return None
+    result = {}
+    for v in values:
+        if "=" not in v:
+            raise typer.BadParameter(f"Invalid --set format: '{v}'. Expected KEY=VALUE")
+        key, val = v.split("=", 1)
+        result[key.strip()] = val.strip()
+    return result
+
+
 @jobs_app.command("submit")
 def jobs_submit(
     config_file: Path = typer.Argument(
@@ -69,20 +82,25 @@ def jobs_submit(
     wait: bool = typer.Option(
         False, "--wait", "-w", help="Wait for job completion"
     ),
+    set_vars: Optional[list[str]] = typer.Option(
+        None, "--set", "-s", help="Set variables for YAML substitution (KEY=VALUE, repeatable)"
+    ),
 ):
     """Submit a new job from a YAML configuration file.
 
     Templates provide defaults for image, resources, checkpoint, and sync settings.
-    Your config file overrides template values.
+    Your config file overrides template values. Use --set to substitute ${VARIABLES}.
 
     Examples:
         ccm jobs submit job.yaml
         ccm jobs submit job.yaml --template namd-production
+        ccm jobs submit job.yaml --set STRUCTURE=F100 --set DATA_FILE=input.data
         ccm jobs submit job.yaml --template pytorch-train --wait
     """
     from cloudcomputemanager.cli.jobs import submit_job
 
-    asyncio.run(submit_job(config_file, name, wait, template))
+    variables = parse_set_variables(set_vars)
+    asyncio.run(submit_job(config_file, name, wait, template, variables=variables))
 
 
 @jobs_app.command("list")
@@ -218,6 +236,66 @@ def jobs_recover(
     from cloudcomputemanager.cli.jobs import recover_jobs
 
     asyncio.run(recover_jobs(job_id))
+
+
+@jobs_app.command("reconnect")
+def jobs_reconnect(
+    job_id: Optional[str] = typer.Argument(
+        None, help="Job ID (or all active jobs if omitted)"
+    ),
+):
+    """Reconnect to jobs after daemon downtime.
+
+    Checks instance status, reads exit codes, syncs results,
+    and updates job state for jobs that completed while the
+    daemon was down. Works without the daemon running.
+
+    Examples:
+        ccm jobs reconnect              # Reconnect all active jobs
+        ccm jobs reconnect job_abc123   # Reconnect specific job
+    """
+    from cloudcomputemanager.cli.jobs import reconnect_jobs
+
+    asyncio.run(reconnect_jobs(job_id))
+
+
+@jobs_app.command("metrics")
+def jobs_metrics(
+    job_id: str = typer.Argument(..., help="Job ID to show metrics for"),
+):
+    """Show performance metrics for a job.
+
+    Displays timing, progress, and resource utilization metrics.
+
+    Examples:
+        ccm jobs metrics job_abc123
+    """
+    from cloudcomputemanager.cli.metrics import show_metrics
+
+    asyncio.run(show_metrics(job_id))
+
+
+@jobs_app.command("update-metrics")
+def jobs_update_metrics(
+    job_id: str = typer.Argument(..., help="Job ID to update metrics for"),
+    instance_id: Optional[str] = typer.Option(
+        None, "--instance", "-i", help="Instance ID (if not stored in job)"
+    ),
+    log_path: str = typer.Option(
+        "/workspace/job.log", "--log", "-l", help="Path to log file on instance"
+    ),
+):
+    """Update job metrics by parsing log file on instance.
+
+    Parses NAMD-style timing information from the job log.
+
+    Examples:
+        ccm jobs update-metrics job_abc123
+        ccm jobs update-metrics job_abc123 --log /workspace/namd.log
+    """
+    from cloudcomputemanager.cli.metrics import update_metrics_from_log
+
+    asyncio.run(update_metrics_from_log(job_id, instance_id, log_path))
 
 
 # ============================================================================
@@ -671,6 +749,16 @@ def quick_run(
         temp_path.unlink()
 
 
+@app.command("reconnect")
+def quick_reconnect(
+    job_id: Optional[str] = typer.Argument(None, help="Job ID (optional)"),
+):
+    """Quick reconnect: Check on jobs after being away."""
+    from cloudcomputemanager.cli.jobs import reconnect_jobs
+
+    asyncio.run(reconnect_jobs(job_id))
+
+
 @app.command("status")
 def quick_status(
     job_id: Optional[str] = typer.Argument(None, help="Job ID (optional)"),
@@ -694,6 +782,107 @@ def quick_search(
     from cloudcomputemanager.cli.instances import search_offers
 
     asyncio.run(search_offers(gpu_type, 1, None, 10))
+
+
+@app.command("exec")
+def quick_exec(
+    job_id: str = typer.Argument(..., help="Job ID"),
+    command: str = typer.Argument(..., help="Command to execute on instance"),
+):
+    """Execute a command on a running job's instance.
+
+    Examples:
+        ccm exec job_abc123 "tail -20 /workspace/output.log"
+        ccm exec job_abc123 "nvidia-smi"
+        ccm exec job_abc123 "ls -la /workspace/"
+    """
+    from cloudcomputemanager.cli.jobs_exec import exec_on_job
+
+    asyncio.run(exec_on_job(job_id, command))
+
+
+@app.command("upload")
+def quick_upload(
+    job_id: str = typer.Argument(..., help="Job ID"),
+    local_path: Path = typer.Argument(..., help="Local file or directory to upload"),
+    remote_path: str = typer.Argument("/workspace/", help="Destination path on instance"),
+):
+    """Upload files to a running job's instance.
+
+    Examples:
+        ccm upload job_abc123 ./script.py /workspace/
+        ccm upload job_abc123 ./input_files/ /workspace/input/
+    """
+    from cloudcomputemanager.cli.jobs_exec import upload_to_job
+
+    asyncio.run(upload_to_job(job_id, local_path, remote_path))
+
+
+@app.command("ssh")
+def quick_ssh(
+    target: str = typer.Argument(..., help="Job ID or Instance ID"),
+):
+    """SSH into a job's instance (accepts job_id or instance_id).
+
+    Examples:
+        ccm ssh job_abc123
+        ccm ssh 12345678
+    """
+    from cloudcomputemanager.cli.jobs_exec import ssh_to_job
+
+    asyncio.run(ssh_to_job(target))
+
+
+# ============================================================================
+# Benchmark Commands
+# ============================================================================
+
+benchmark_app = typer.Typer(help="GPU cost-performance benchmarking")
+app.add_typer(benchmark_app, name="benchmark")
+
+
+@benchmark_app.command("run")
+def benchmark_run(
+    config_file: Path = typer.Argument(
+        ...,
+        help="Benchmark YAML configuration file",
+        exists=True,
+    ),
+    gpu: Optional[str] = typer.Option(
+        None, "--gpu", "-g", help="Limit to specific GPU type"
+    ),
+):
+    """Run a benchmark suite across GPU tiers.
+
+    The benchmark YAML defines workload, GPU types to test, and metrics to extract.
+    Works with any workload — LAMMPS, PyTorch, GROMACS, or anything with CLI output.
+
+    Examples:
+        ccm benchmark run benchmark.yaml
+        ccm benchmark run benchmark.yaml --gpu RTX_3060
+    """
+    from cloudcomputemanager.cli.benchmarks import run_benchmark
+
+    asyncio.run(run_benchmark(config_file, gpu))
+
+
+@benchmark_app.command("results")
+def benchmark_results(
+    suite_id: Optional[str] = typer.Argument(None, help="Suite ID (all if omitted)"),
+    sort: str = typer.Option("cost", "--sort", "-s", help="Sort by: cost, performance"),
+):
+    """Show benchmark results.
+
+    Displays aggregated results grouped by GPU type with cost efficiency ranking.
+
+    Examples:
+        ccm benchmark results
+        ccm benchmark results bench_abc123
+        ccm benchmark results --sort performance
+    """
+    from cloudcomputemanager.cli.benchmarks import show_results
+
+    asyncio.run(show_results(suite_id, sort))
 
 
 # ============================================================================

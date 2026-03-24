@@ -4,11 +4,57 @@ Templates provide reusable configurations for common workloads.
 User configs can inherit from templates and override specific values.
 """
 
+import logging
+import random
+from datetime import datetime
 from pathlib import Path
+from string import Template
 from typing import Any, Optional
 import yaml
 
+logger = logging.getLogger(__name__)
+
 from cloudcomputemanager.templates import get_template_path, list_templates, TEMPLATES_DIR
+
+
+# Mapping of common alternate key names to canonical names
+RESOURCE_KEY_ALIASES = {
+    "gpu_memory_gb": "gpu_memory_min",
+    "gpu_mem": "gpu_memory_min",
+    "vram": "gpu_memory_min",
+    "memory_gb": "ram_gb",
+    "memory": "ram_gb",
+    "cpu": "cpu_cores",
+    "cpus": "cpu_cores",
+    "disk": "disk_gb",
+    "storage": "disk_gb",
+    "gpu": "gpu_type",
+}
+
+
+def normalize_resources(resources: dict) -> dict:
+    """
+    Normalize resource keys to canonical names.
+
+    This ensures that alternate key names (like gpu_memory_gb) are
+    converted to their canonical forms (gpu_memory_min) so that
+    the rest of the codebase can use consistent key names.
+
+    Args:
+        resources: Resource dictionary with potentially non-canonical keys
+
+    Returns:
+        New dictionary with normalized keys
+    """
+    if not resources:
+        return resources
+
+    normalized = {}
+    for key, value in resources.items():
+        canonical_key = RESOURCE_KEY_ALIASES.get(key, key)
+        normalized[canonical_key] = value
+
+    return normalized
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -58,22 +104,67 @@ def load_template(name: str) -> dict:
     return template or {}
 
 
-def load_config_with_template(config_path: Path, template_name: Optional[str] = None) -> dict:
+def substitute_variables(config_str: str, variables: Optional[dict[str, str]] = None) -> str:
     """
-    Load a job config, optionally merging with a template.
+    Perform variable substitution on a YAML string.
+
+    Supports ${VARIABLE} syntax. Built-in variables are always available.
+    User-provided variables override built-ins.
+
+    Args:
+        config_str: Raw YAML string
+        variables: User-provided variables from --set KEY=VALUE
+
+    Returns:
+        YAML string with variables substituted
+    """
+    # Built-in variables available in all job configs
+    builtins = {
+        "TIMESTAMP": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "DATE": datetime.now().strftime("%Y-%m-%d"),
+        "RANDOM": str(random.randint(10000, 99999)),
+    }
+
+    # Merge: user vars override built-ins
+    all_vars = {**builtins, **(variables or {})}
+
+    # Use safe_substitute to leave unmatched ${VARS} as-is (don't crash)
+    return Template(config_str).safe_substitute(all_vars)
+
+
+def load_config_with_template(
+    config_path: Path,
+    template_name: Optional[str] = None,
+    variables: Optional[dict[str, str]] = None,
+) -> dict:
+    """
+    Load a job config, optionally merging with a template and substituting variables.
 
     If the config has a "template" key, it will be used unless
     template_name is explicitly provided.
 
+    Resource keys are normalized (e.g., gpu_memory_gb -> gpu_memory_min)
+    to ensure consistent handling throughout the codebase.
+
     Args:
         config_path: Path to user's job config YAML
         template_name: Optional template name to use (overrides config's template key)
+        variables: Optional dict of variable substitutions (from --set KEY=VALUE)
 
     Returns:
-        Merged configuration dictionary
+        Merged configuration dictionary with normalized resource keys
     """
-    with open(config_path) as f:
-        user_config = yaml.safe_load(f) or {}
+    raw_yaml = config_path.read_text()
+
+    # Apply variable substitution before YAML parsing
+    if variables:
+        raw_yaml = substitute_variables(raw_yaml, variables)
+
+    user_config = yaml.safe_load(raw_yaml) or {}
+
+    # Normalize user resource keys before merging
+    if "resources" in user_config:
+        user_config["resources"] = normalize_resources(user_config["resources"])
 
     # Determine template to use
     template_to_use = template_name or user_config.pop("template", None)
@@ -87,6 +178,10 @@ def load_config_with_template(config_path: Path, template_name: Optional[str] = 
     except FileNotFoundError:
         raise ValueError(f"Template not found: {template_to_use}. "
                         f"Available: {', '.join(list_templates())}")
+
+    # Normalize template resources too
+    if "resources" in template:
+        template["resources"] = normalize_resources(template["resources"])
 
     return deep_merge(template, user_config)
 
@@ -110,7 +205,8 @@ def get_available_templates() -> list[dict]:
                 "max_rate": template.get("budget", {}).get("max_hourly_rate", "N/A"),
                 "checkpoint": template.get("checkpoint", {}).get("enabled", False),
             })
-        except Exception:
+        except (yaml.YAMLError, FileNotFoundError, KeyError) as e:
+            logger.warning("Failed to load template %s: %s", name, e)
             templates.append({
                 "name": name,
                 "image": "Error loading",

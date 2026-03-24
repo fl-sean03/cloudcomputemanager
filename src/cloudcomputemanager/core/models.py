@@ -29,6 +29,7 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    BUDGET_EXCEEDED = "budget_exceeded"
 
 
 class InstanceStatus(str, Enum):
@@ -94,9 +95,9 @@ class Priority(str, Enum):
 class Resources(SQLModel):
     """Resource requirements for a job."""
 
-    gpu_type: str = Field(default="RTX_4090", description="GPU model name")
+    gpu_type: Optional[str] = Field(default=None, description="GPU model name (None = any)")
     gpu_count: int = Field(default=1, ge=1, le=8, description="Number of GPUs")
-    gpu_memory_min: int = Field(default=16, ge=4, description="Minimum GPU VRAM in GB")
+    gpu_memory_min: Optional[int] = Field(default=None, description="Minimum GPU VRAM in GB (None = provider default)")
     cpu_cores: int = Field(default=8, ge=1, description="Number of CPU cores")
     memory_gb: int = Field(default=32, ge=4, description="System RAM in GB")
     disk_gb: int = Field(default=50, ge=10, description="Disk space in GB")
@@ -122,6 +123,37 @@ class RetryPolicy(SQLModel):
         default_factory=lambda: [42],
         description="Exit codes that trigger recovery instead of failure",
     )
+
+
+class JobMetrics(SQLModel):
+    """Performance metrics for a job.
+
+    Tracks various performance indicators collected during job execution.
+    Useful for monitoring job health and comparing performance across runs.
+    """
+
+    # Timing metrics
+    steps_per_second: Optional[float] = Field(default=None, description="Simulation steps per second")
+    seconds_per_step: Optional[float] = Field(default=None, description="Wall time per step")
+    estimated_hours_remaining: Optional[float] = Field(default=None, description="Estimated time to completion")
+
+    # Progress metrics
+    current_step: Optional[int] = Field(default=None, description="Current simulation step")
+    total_steps: Optional[int] = Field(default=None, description="Total steps to complete")
+    progress_percent: Optional[float] = Field(default=None, description="Progress as percentage")
+
+    # Output metrics
+    output_size_mb: Optional[float] = Field(default=None, description="Size of output files in MB")
+
+    # Resource utilization
+    gpu_utilization: Optional[float] = Field(default=None, description="GPU utilization percentage")
+    cpu_utilization: Optional[float] = Field(default=None, description="CPU utilization percentage")
+    memory_usage_gb: Optional[float] = Field(default=None, description="Memory usage in GB")
+
+    # Quality indicators
+    is_healthy: bool = Field(default=True, description="Whether job appears healthy")
+    last_updated: Optional[datetime] = Field(default=None, description="When metrics were last updated")
+    notes: Optional[str] = Field(default=None, description="Any notes or warnings")
 
 
 class CheckpointConfig(SQLModel):
@@ -200,7 +232,21 @@ class Job(SQLModel, table=True):
     # Container configuration
     image: str = Field(description="Docker image to use")
     command: str = Field(description="Command to run")
+    setup_commands: Optional[str] = Field(default=None, description="Setup script to run before job (apt install, pip install, etc.)")
     environment_json: str = Field(default="{}", description="JSON-encoded environment variables")
+
+    # Provisioning configuration
+    provisioning_timeout: int = Field(default=300, ge=30, description="Seconds to wait for instance to become SSH-ready")
+
+    # Multi-stage job support
+    stages_json: str = Field(default="[]", description="JSON-encoded list of job stages")
+    current_stage: int = Field(default=0, description="Current stage index (0-based)")
+
+    # Progress tracking configuration
+    progress_json: str = Field(default="{}", description="JSON-encoded progress tracking config")
+
+    # Notification hooks
+    notifications_json: str = Field(default="{}", description="JSON-encoded notification hooks")
 
     # Resource requirements (stored as JSON)
     resources_json: str = Field(default="{}", description="JSON-encoded Resources")
@@ -231,6 +277,15 @@ class Job(SQLModel, table=True):
     total_runtime_seconds: int = Field(default=0)
     error_message: Optional[str] = Field(default=None)
 
+    # Sync tracking (independent of instance status)
+    sync_status: str = Field(default="not_synced", description="not_synced, syncing, synced, sync_failed")
+    last_sync_at: Optional[datetime] = Field(default=None, description="Last successful sync time")
+    synced_bytes: int = Field(default=0, description="Total bytes synced")
+    synced_files: int = Field(default=0, description="Total files synced")
+
+    # Performance metrics (stored as JSON)
+    metrics_json: str = Field(default="{}", description="JSON-encoded JobMetrics")
+
     def get_resources(self) -> Resources:
         """Parse resources from JSON."""
         return Resources.model_validate(_json.loads(self.resources_json))
@@ -259,6 +314,46 @@ class Job(SQLModel, table=True):
     def get_tags(self) -> list[str]:
         """Parse tags from JSON."""
         return _json.loads(self.tags_json)
+
+    def get_metrics(self) -> JobMetrics:
+        """Parse metrics from JSON."""
+        data = _json.loads(self.metrics_json)
+        return JobMetrics.model_validate(data) if data else JobMetrics()
+
+    def set_metrics(self, metrics: JobMetrics) -> None:
+        """Store metrics as JSON."""
+        self.metrics_json = metrics.model_dump_json()
+
+    def get_stages(self) -> list[dict]:
+        """Parse stages from JSON. Returns empty list on parse error."""
+        try:
+            result = _json.loads(self.stages_json)
+            return result if isinstance(result, list) else []
+        except (ValueError, TypeError):
+            return []
+
+    def get_current_stage(self) -> Optional[dict]:
+        """Get the current stage definition, or None if no stages."""
+        stages = self.get_stages()
+        if not stages or self.current_stage < 0 or self.current_stage >= len(stages):
+            return None
+        return stages[self.current_stage]
+
+    def get_progress_config(self) -> dict:
+        """Parse progress tracking config from JSON. Returns empty dict on parse error."""
+        try:
+            result = _json.loads(self.progress_json)
+            return result if isinstance(result, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def get_notifications(self) -> dict:
+        """Parse notification hooks from JSON. Returns empty dict on parse error."""
+        try:
+            result = _json.loads(self.notifications_json)
+            return result if isinstance(result, dict) else {}
+        except (ValueError, TypeError):
+            return {}
 
     @property
     def resources(self) -> dict:
@@ -357,6 +452,36 @@ class Checkpoint(SQLModel, table=True):
     def get_app_metadata(self) -> dict:
         """Parse app metadata from JSON."""
         return _json.loads(self.app_metadata_json)
+
+
+class CostRecord(SQLModel, table=True):
+    """Historical cost-performance record for completed jobs."""
+
+    __tablename__ = "cost_records"
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: str = Field(index=True, description="Associated job ID")
+    project: Optional[str] = Field(default=None, index=True)
+
+    # Instance details
+    gpu_type: str = Field(description="GPU model used")
+    gpu_count: int = Field(default=1)
+    cpu_cores: int = Field(default=0)
+    hourly_rate: float = Field(default=0.0)
+
+    # Performance
+    performance_metric: Optional[float] = Field(default=None, description="Primary performance value (e.g., steps/s, samples/s)")
+    metric_name: Optional[str] = Field(default=None, description="Name of the metric (e.g., 'timesteps_per_second')")
+    metric_unit: Optional[str] = Field(default=None, description="Unit of the metric")
+
+    # Cost
+    total_cost_usd: float = Field(default=0.0)
+    total_runtime_seconds: int = Field(default=0)
+    cost_per_unit: Optional[float] = Field(default=None, description="Cost per million units of the primary metric")
+
+    # Metadata
+    workload_type: Optional[str] = Field(default=None, description="User-defined workload type tag")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class SyncRecord(SQLModel, table=True):

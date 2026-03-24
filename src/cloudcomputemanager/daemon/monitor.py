@@ -76,6 +76,7 @@ class JobMonitor:
         self._task: Optional[asyncio.Task] = None
         self._event_handlers: list[Callable[[MonitorEvent], Any]] = []
         self._monitored_jobs: set[str] = set()
+        self._last_recovery_check: float = 0
 
     def on_event(self, handler: Callable[[MonitorEvent], Any]) -> None:
         """Register an event handler."""
@@ -110,14 +111,23 @@ class JobMonitor:
             logger.debug("Job completion check failed", instance_id=instance_id, error=str(e))
             return False, None
 
-    async def check_instance_health(self, instance_id: str) -> tuple[bool, Optional[str]]:
-        """
-        Check if an instance is healthy and running.
+    async def check_instance_health(
+        self, instance_id: str, job: Optional[Job] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Multi-signal health check for an instance.
+
+        Checks:
+        1. Instance status via provider API
+        2. SSH connectivity
+        3. Process liveness (if process_pattern configured on job)
+        4. Workspace existence
+        5. Disk space (warns if <1GB free)
 
         Returns:
-            (healthy, reason) - healthy is True if instance is OK
+            (healthy, reason) — healthy is True if instance is OK
         """
         try:
+            # Signal 1: Instance status from provider
             instance = await self.provider.get_instance(instance_id)
 
             if instance is None:
@@ -131,27 +141,119 @@ class JobMonitor:
             if status != "running":
                 return False, f"instance_{status}"
 
-            # Try SSH health check
+            # Signal 2-5: Combined SSH probe (single SSH call for efficiency)
+            health_cmd_parts = [
+                # SSH connectivity + workspace existence
+                "[ -d /workspace ] && echo 'WS_OK' || echo 'WS_MISSING'",
+                # Exit code sentinel check
+                "cat /workspace/.ccm_exit_code 2>/dev/null || echo 'no_exit'",
+                # Disk space check
+                "df -BG /workspace 2>/dev/null | tail -1 | awk '{print $4}' || echo 'unknown'",
+            ]
+
+            # Add process check if job has a process pattern
+            process_pattern = None
+            if job:
+                job_config = job.resources or {}
+                process_pattern = job_config.get("process_pattern")
+            if process_pattern:
+                health_cmd_parts.append(
+                    f"pgrep -f {process_pattern!r} > /dev/null && echo 'PROC_OK' || echo 'PROC_STOPPED'"
+                )
+
+            health_cmd = "; ".join(health_cmd_parts)
             exit_code, stdout, stderr = await self.provider.execute_command(
-                instance_id, "echo ok", timeout=10
+                instance_id, health_cmd, timeout=15
             )
 
-            if exit_code != 0:
+            if exit_code == 255:
+                # SSH connection failed entirely
                 return False, "ssh_failed"
+
+            lines = stdout.strip().split("\n")
+
+            # Parse workspace status
+            ws_status = lines[0].strip() if lines else "unknown"
+            if ws_status == "WS_MISSING":
+                return False, "workspace_missing"
+
+            # Parse disk space
+            if len(lines) >= 3:
+                disk_free = lines[2].strip()
+                if disk_free not in ("unknown", "") and disk_free.endswith("G"):
+                    try:
+                        free_gb = int(disk_free.replace("G", ""))
+                        if free_gb < 1:
+                            logger.warning("Instance disk nearly full", instance_id=instance_id, free_gb=free_gb)
+                    except ValueError:
+                        pass
+
+            # Parse process status
+            if process_pattern and len(lines) >= 4:
+                proc_status = lines[3].strip()
+                if proc_status == "PROC_STOPPED":
+                    # Process not running but no exit code — might be a problem
+                    exit_status = lines[1].strip() if len(lines) >= 2 else "no_exit"
+                    if exit_status == "no_exit":
+                        return False, "process_stopped_no_exit_code"
 
             return True, None
 
         except Exception as e:
             return False, f"check_failed:{str(e)[:50]}"
 
+    async def check_job_budget(self, job: Job) -> tuple[bool, Optional[str]]:
+        """Check if job has exceeded its budget.
+
+        Returns:
+            (within_budget, reason) — within_budget is True if OK
+        """
+        budget = job.budget or {}
+        if not budget:
+            return True, None
+
+        # Calculate elapsed time
+        if not job.started_at:
+            return True, None
+
+        elapsed_hours = (datetime.utcnow() - job.started_at).total_seconds() / 3600
+        hourly_rate = 0  # Job doesn't store hourly_rate; cost tracking is separate
+        cost_so_far = hourly_rate * elapsed_hours
+
+        # Check max hours
+        max_hours = budget.get("max_hours")
+        if max_hours and elapsed_hours >= max_hours:
+            return False, f"max_hours_exceeded:{elapsed_hours:.1f}h/{max_hours}h"
+
+        # Check max cost
+        max_cost = budget.get("max_cost_usd")
+        if max_cost and cost_so_far >= max_cost:
+            return False, f"max_cost_exceeded:${cost_so_far:.2f}/${max_cost}"
+
+        # Warn at 80% threshold
+        if max_cost and cost_so_far >= max_cost * 0.8:
+            logger.warning("Job approaching budget limit", job_id=job.job_id, cost=cost_so_far, max=max_cost)
+
+        return True, None
+
     async def sync_job_results(self, job: Job) -> bool:
-        """Sync job results to local storage."""
+        """Sync job results to local storage and update sync tracking."""
         if not job.instance_id:
             return False
 
         sync_config = job.sync_config or {}
         if not sync_config:
             return True  # Nothing to sync
+
+        # Update sync status to syncing
+        async with get_session() as session:
+            stmt = select(Job).where(Job.job_id == job.job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job:
+                db_job.sync_status = "syncing"
+                session.add(db_job)
+                await session.commit()
 
         try:
             sync_dir = self.settings.sync_local_path / job.job_id
@@ -164,6 +266,25 @@ class JobMonitor:
                 exclude=sync_config.get("exclude_patterns", []),
             )
 
+            # Update sync tracking in DB
+            async with get_session() as session:
+                stmt = select(Job).where(Job.job_id == job.job_id)
+                result = await session.execute(stmt)
+                db_job = result.scalar_one_or_none()
+                if db_job:
+                    if success:
+                        db_job.sync_status = "synced"
+                        db_job.last_sync_at = datetime.utcnow()
+                        # Count synced files/bytes
+                        if sync_dir.exists():
+                            files = list(sync_dir.rglob("*"))
+                            db_job.synced_files = sum(1 for f in files if f.is_file())
+                            db_job.synced_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                    else:
+                        db_job.sync_status = "sync_failed"
+                    session.add(db_job)
+                    await session.commit()
+
             if success:
                 self._emit_event(MonitorEvent(
                     event_type=EventType.SYNC_COMPLETED,
@@ -175,6 +296,15 @@ class JobMonitor:
             return success
         except Exception as e:
             logger.error("Sync failed", job_id=job.job_id, error=str(e))
+            # Mark sync as failed
+            async with get_session() as session:
+                stmt = select(Job).where(Job.job_id == job.job_id)
+                result = await session.execute(stmt)
+                db_job = result.scalar_one_or_none()
+                if db_job:
+                    db_job.sync_status = "sync_failed"
+                    session.add(db_job)
+                    await session.commit()
             return False
 
     async def terminate_job_instance(self, job: Job) -> bool:
@@ -201,7 +331,18 @@ class JobMonitor:
         job: Job,
         exit_code: int,
     ) -> None:
-        """Handle a completed job: update status, sync, terminate."""
+        """Handle a completed job: update status, sync, terminate.
+
+        Exit code 143 (SIGTERM) indicates preemption — route to recovery instead.
+        """
+        from cloudcomputemanager.core.wrapper import PREEMPTION_EXIT_CODE
+
+        # Exit code 143 = SIGTERM = preemption. Route to recovery, not failure.
+        if exit_code == PREEMPTION_EXIT_CODE:
+            logger.warning("Job preempted (SIGTERM, exit 143)", job_id=job.job_id)
+            await self.handle_preemption(job, "sigterm_preemption")
+            return
+
         logger.info("Job completed", job_id=job.job_id, exit_code=exit_code)
 
         # Update job status in database
@@ -215,6 +356,7 @@ class JobMonitor:
                 db_job.status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
                 db_job.completed_at = datetime.utcnow()
                 session.add(db_job)
+                await session.commit()
 
         # Emit event
         event_type = EventType.JOB_COMPLETED if exit_code == 0 else EventType.JOB_FAILED
@@ -224,6 +366,10 @@ class JobMonitor:
             instance_id=job.instance_id,
             data={"exit_code": exit_code},
         ))
+
+        # Run notification hooks
+        notification_event = "on_complete" if exit_code == 0 else "on_failure"
+        await self.run_notification(job, notification_event)
 
         # Sync results
         if self.config.sync_on_complete:
@@ -264,8 +410,274 @@ class JobMonitor:
                     db_job.completed_at = datetime.utcnow()
 
                 session.add(db_job)
+                await session.commit()
 
         self._monitored_jobs.discard(job.job_id)
+
+    async def update_job_progress(self, job: Job) -> None:
+        """Update job progress metrics using pluggable progress parsers.
+
+        Supports three modes (configured via job's progress config):
+        - regex_parse: Tail a file, extract a value via regex, compute progress
+        - custom_command: Run a command, parse stdout as numeric progress
+        - file_growth: Track output file size growth (fallback/default)
+        """
+        if not job.instance_id:
+            return
+
+        import re
+        import json as _json
+
+        progress_config = job.get_progress_config()
+        progress_type = progress_config.get("type", "file_growth")
+
+        current_value = None
+        total_value = progress_config.get("total")
+        rate_value = None
+
+        try:
+            if progress_type == "regex_parse" and progress_config.get("file"):
+                # Tail the specified file, apply regex to extract current value
+                target_file = progress_config["file"]
+                pattern = progress_config.get("regex", r"(\d+)")
+                tail_lines = progress_config.get("tail_lines", 20)
+
+                exit_code, stdout, _ = await self.provider.execute_command(
+                    job.instance_id,
+                    f"tail -n {tail_lines} {target_file} 2>/dev/null",
+                    timeout=10,
+                )
+                if exit_code == 0 and stdout.strip():
+                    # Find all matches, use the last one (most recent)
+                    matches = re.findall(pattern, stdout)
+                    if matches:
+                        try:
+                            current_value = float(matches[-1])
+                        except (ValueError, TypeError):
+                            pass
+
+            elif progress_type == "custom_command" and progress_config.get("command"):
+                # Run an arbitrary command and parse stdout as a number
+                exit_code, stdout, _ = await self.provider.execute_command(
+                    job.instance_id,
+                    progress_config["command"],
+                    timeout=15,
+                )
+                if exit_code == 0 and stdout.strip():
+                    # Extract first number from output
+                    match = re.search(r"([\d.]+)", stdout.strip())
+                    if match:
+                        current_value = float(match.group(1))
+
+            else:
+                # Default: file_growth — track output directory size
+                resources = job.resources or {}
+                check_cmd = "du -sm /workspace 2>/dev/null | awk '{print $1}'"
+                exit_code, stdout, _ = await self.provider.execute_command(
+                    job.instance_id, check_cmd, timeout=10
+                )
+                if exit_code == 0:
+                    try:
+                        output_size_mb = float(stdout.strip().split("\n")[0])
+                        expected_size_mb = resources.get("expected_output_size_mb")
+                        if expected_size_mb and expected_size_mb > 0:
+                            current_value = output_size_mb
+                            total_value = expected_size_mb
+                    except (ValueError, IndexError):
+                        pass
+
+            # Calculate progress percentage and update metrics
+            progress_pct = None
+            if current_value is not None and total_value and total_value > 0:
+                progress_pct = min(100.0, (current_value / total_value) * 100)
+
+            # Update metrics in DB
+            if current_value is not None or progress_pct is not None:
+                async with get_session() as session:
+                    stmt = select(Job).where(Job.job_id == job.job_id)
+                    result = await session.execute(stmt)
+                    db_job = result.scalar_one_or_none()
+                    if db_job:
+                        metrics = _json.loads(db_job.metrics_json) if db_job.metrics_json != "{}" else {}
+                        if current_value is not None:
+                            metrics["current_step"] = current_value
+                        if total_value:
+                            metrics["total_steps"] = total_value
+                        if progress_pct is not None:
+                            metrics["progress_percent"] = round(progress_pct, 1)
+                        metrics["last_updated"] = datetime.utcnow().isoformat()
+                        db_job.metrics_json = _json.dumps(metrics)
+                        session.add(db_job)
+                        await session.commit()
+
+        except Exception as e:
+            logger.debug("Progress check failed", job_id=job.job_id, error=str(e))
+
+    async def advance_job_stage(self, job: Job, exit_code: int) -> bool:
+        """Check if a multi-stage job should advance to the next stage.
+
+        Returns True if the job advanced (still running), False if done or failed.
+        """
+        stages = job.get_stages()
+        if not stages:
+            return False  # Not a multi-stage job
+
+        current_idx = job.current_stage
+        current_stage = stages[current_idx] if current_idx < len(stages) else None
+
+        if not current_stage:
+            return False
+
+        # If current stage failed, don't advance
+        if exit_code != 0:
+            logger.warning("Stage failed", job_id=job.job_id, stage=current_stage.get("name"), exit_code=exit_code)
+            return False
+
+        next_idx = current_idx + 1
+        if next_idx >= len(stages):
+            return False  # All stages complete
+
+        # Advance to next stage
+        next_stage = stages[next_idx]
+        next_command = next_stage.get("command", "")
+
+        if not next_command:
+            logger.error("Next stage has no command", job_id=job.job_id, stage=next_stage.get("name"))
+            return False
+
+        logger.info("Advancing to next stage",
+                     job_id=job.job_id,
+                     stage_name=next_stage.get("name"),
+                     stage_index=next_idx)
+
+        # Remove the exit code sentinel so the next stage can write its own
+        await self.provider.execute_command(
+            job.instance_id,
+            "rm -f /workspace/.ccm_exit_code",
+            timeout=10,
+        )
+
+        # Deploy and run SIGTERM-aware wrapper for next stage
+        from cloudcomputemanager.core.wrapper import build_deploy_commands
+        setup_cmd, run_cmd = build_deploy_commands(
+            next_command,
+            stage_name=next_stage.get("name"),
+            script_path="/workspace/run_stage.sh",
+        )
+        await self.provider.execute_command(job.instance_id, setup_cmd, timeout=15)
+        await self.provider.execute_command(job.instance_id, run_cmd, timeout=15)
+
+        # Update job in DB
+        async with get_session() as session:
+            stmt = select(Job).where(Job.job_id == job.job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job:
+                db_job.current_stage = next_idx
+                db_job.command = next_command
+                session.add(db_job)
+                await session.commit()
+
+        return True
+
+    async def run_notification(self, job: Job, event: str) -> None:
+        """Run notification hooks for a job event.
+
+        Args:
+            job: The job
+            event: Event name (on_complete, on_failure, on_budget_exceeded)
+        """
+        import shlex
+
+        notifications = job.get_notifications()
+        command = notifications.get(event)
+        if not command:
+            return
+
+        # Substitute variables (shell-escaped to prevent injection)
+        replacements = {
+            "${JOB_ID}": shlex.quote(job.job_id),
+            "${JOB_NAME}": shlex.quote(job.name),
+            "${EXIT_CODE}": str(job.exit_code or 0),
+            "${INSTANCE_ID}": shlex.quote(job.instance_id or ""),
+            "${PROJECT}": shlex.quote(job.project or ""),
+            "${STATUS}": shlex.quote(job.status.value),
+        }
+        for key, val in replacements.items():
+            command = command.replace(key, val)
+
+        try:
+            import asyncio as _asyncio
+            proc = await _asyncio.create_subprocess_shell(
+                command,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+            )
+            await _asyncio.wait_for(proc.communicate(), timeout=30)
+            logger.info("Notification sent", hook=event, job_id=job.job_id)
+        except asyncio.TimeoutError:
+            logger.warning("Notification timed out", hook=event, job_id=job.job_id)
+        except Exception as e:
+            logger.warning("Notification failed", hook=event, job_id=job.job_id, error=str(e))
+
+    async def _reconcile_stale_jobs(self) -> None:
+        """On daemon startup, reconcile jobs that changed while daemon was down.
+
+        Checks all RUNNING/CHECKPOINTING jobs:
+        - Instance gone → handle_preemption
+        - Instance stopped/error → handle_preemption
+        - Exit code exists → handle_completion (with multi-stage awareness)
+        - Still running → continue monitoring (no action)
+        """
+        logger.info("Reconciling stale jobs after daemon restart")
+
+        async with get_session() as session:
+            stmt = select(Job).where(
+                Job.status.in_([JobStatus.RUNNING, JobStatus.CHECKPOINTING])
+            )
+            result = await session.execute(stmt)
+            jobs = result.scalars().all()
+
+        if not jobs:
+            logger.info("No stale jobs to reconcile")
+            return
+
+        logger.info("Found jobs to reconcile", count=len(jobs))
+
+        for job in jobs:
+            if not job.instance_id:
+                continue
+
+            try:
+                # Check instance status via provider API
+                instance = await self.provider.get_instance(job.instance_id)
+
+                if instance is None:
+                    logger.warning("Instance gone for running job",
+                                   job_id=job.job_id, instance_id=job.instance_id)
+                    await self.handle_preemption(job, "instance_gone_on_restart")
+                    continue
+
+                from cloudcomputemanager.providers.base import ProviderStatus
+                if instance.status not in (ProviderStatus.RUNNING, ProviderStatus.STARTING):
+                    logger.warning("Instance not running on restart",
+                                   job_id=job.job_id, status=instance.status.value)
+                    await self.handle_preemption(job, f"instance_{instance.status.value}_on_restart")
+                    continue
+
+                # Instance is running — check for completion
+                completed, exit_code = await self.check_job_completion(job.instance_id)
+                if completed:
+                    logger.info("Job completed while daemon was down",
+                                job_id=job.job_id, exit_code=exit_code)
+                    if exit_code == 0 and await self.advance_job_stage(job, exit_code):
+                        continue
+                    await self.handle_job_completion(job, exit_code)
+                else:
+                    logger.info("Job still running, resuming monitoring", job_id=job.job_id)
+
+            except Exception as e:
+                logger.error("Error reconciling job", job_id=job.job_id, error=str(e))
 
     async def _monitor_loop(self) -> None:
         """Main monitoring loop."""
@@ -278,7 +690,10 @@ class JobMonitor:
             max_attempts=self.config.max_recovery_attempts,
         )
 
-        last_recovery_check = 0
+        # Reconcile any jobs that changed while daemon was down
+        await self._reconcile_stale_jobs()
+
+        self._last_recovery_check = 0
 
         while self._running:
             try:
@@ -302,19 +717,48 @@ class JobMonitor:
                     # Check completion first
                     completed, exit_code = await self.check_job_completion(job.instance_id)
                     if completed:
+                        # For multi-stage jobs, try to advance to next stage
+                        if exit_code == 0 and await self.advance_job_stage(job, exit_code):
+                            # Job advanced to next stage, still running
+                            continue
                         await self.handle_job_completion(job, exit_code)
                         continue
 
-                    # Check instance health
-                    healthy, reason = await self.check_instance_health(job.instance_id)
+                    # Check budget
+                    within_budget, budget_reason = await self.check_job_budget(job)
+                    if not within_budget:
+                        logger.warning("Job budget exceeded", job_id=job.job_id, reason=budget_reason)
+                        await self.run_notification(job, "on_budget_exceeded")
+                        # Sync results before terminating
+                        await self.sync_job_results(job)
+                        # Update job status
+                        async with get_session() as session:
+                            stmt = select(Job).where(Job.job_id == job.job_id)
+                            result = await session.execute(stmt)
+                            db_job = result.scalar_one_or_none()
+                            if db_job:
+                                db_job.status = JobStatus.BUDGET_EXCEEDED
+                                db_job.error_message = f"Budget exceeded: {budget_reason}"
+                                db_job.completed_at = datetime.utcnow()
+                                session.add(db_job)
+                                await session.commit()
+                        # Terminate instance
+                        await self.terminate_job_instance(job)
+                        self._monitored_jobs.discard(job.job_id)
+                        continue
+
+                    # Check instance health (multi-signal)
+                    healthy, reason = await self.check_instance_health(job.instance_id, job=job)
                     if not healthy:
                         await self.handle_preemption(job, reason)
                         continue
 
+                    # Update progress metrics
+                    await self.update_job_progress(job)
+
                 # Handle recovery jobs periodically
-                import time
-                if self.config.preemption_recovery and time.time() - last_recovery_check > 60:
-                    last_recovery_check = time.time()
+                if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 60:
+                    self._last_recovery_check = asyncio.get_event_loop().time()
 
                     async with get_session() as session:
                         stmt = select(Job).where(Job.status == JobStatus.RECOVERING)

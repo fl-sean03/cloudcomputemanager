@@ -236,10 +236,14 @@ class TestInstanceHealthCheck:
 
     @pytest.mark.asyncio
     async def test_instance_ssh_failed(self):
-        """Test detecting SSH failure."""
+        """Test detecting SSH failure (exit code 255 = SSH connection failure)."""
         provider = MockProvider()
         provider.instances["inst123"] = MockInstance("inst123", "running")
-        provider.execute_results[("inst123", "echo ok")] = (1, "", "Connection refused")
+        # Override default execute to return SSH connection failure for any command
+        original_execute = provider.execute_command
+        async def fail_all(instance_id, command, timeout=60):
+            return (255, "", "Connection refused")
+        provider.execute_command = fail_all
 
         monitor = JobMonitor(provider=provider)
         healthy, reason = await monitor.check_instance_health("inst123")

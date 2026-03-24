@@ -1,6 +1,8 @@
 """Batch job operations for CloudComputeManager."""
 
 import asyncio
+import itertools
+import tempfile
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -21,6 +23,48 @@ from cloudcomputemanager.cli.jobs import check_job_completion
 console = Console()
 
 
+def expand_matrix(config_path: Path) -> list[tuple[Path, dict[str, str]]]:
+    """Expand a matrix config into individual (config_path, variables) pairs.
+
+    If the config has a 'matrix' key, computes the Cartesian product of all
+    matrix parameters and returns one entry per combination. The 'template'
+    key in the matrix config points to the actual job YAML.
+
+    Args:
+        config_path: Path to the matrix YAML file
+
+    Returns:
+        List of (job_config_path, variables_dict) pairs
+    """
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    if not config or "matrix" not in config:
+        return [(config_path, {})]
+
+    matrix = config["matrix"]
+    template_path = config.get("template")
+    if template_path:
+        # Resolve relative to the matrix file's directory
+        template_path = config_path.parent / template_path
+        if not template_path.exists():
+            raise FileNotFoundError(f"Matrix template not found: {template_path}")
+    else:
+        # Use the same file (minus the matrix key) as the template
+        template_path = config_path
+
+    # Compute Cartesian product of all matrix parameters
+    keys = list(matrix.keys())
+    values = [matrix[k] if isinstance(matrix[k], list) else [matrix[k]] for k in keys]
+
+    combinations = []
+    for combo in itertools.product(*values):
+        variables = dict(zip(keys, (str(v) for v in combo)))
+        combinations.append((template_path, variables))
+
+    return combinations
+
+
 async def batch_submit(
     config_files: List[Path],
     max_parallel: int = 3,
@@ -37,19 +81,30 @@ async def batch_submit(
     """
     from cloudcomputemanager.cli.jobs import submit_job
 
-    console.print(f"\n[bold]Batch Submit[/bold]: {len(config_files)} jobs")
+    # Expand any matrix configs into individual jobs
+    job_entries: list[tuple[Path, dict[str, str]]] = []
+    for config_file in config_files:
+        try:
+            entries = expand_matrix(config_file)
+            job_entries.extend(entries)
+        except Exception as e:
+            console.print(f"[red]Error expanding {config_file}: {e}[/red]")
+            return
+
+    console.print(f"\n[bold]Batch Submit[/bold]: {len(job_entries)} jobs (from {len(config_files)} config files)")
     console.print(f"  Max parallel: {max_parallel}")
     console.print(f"  Dry run: {dry_run}\n")
 
     if dry_run:
         console.print("[bold]Would submit:[/bold]")
-        for i, config_file in enumerate(config_files):
+        for i, (config_file, variables) in enumerate(job_entries):
             try:
                 with open(config_file) as f:
                     config = yaml.safe_load(f)
                 name = config.get("name", config_file.stem)
-                gpu = config.get("resources", {}).get("gpu_type", "unknown")
-                console.print(f"  {i+1}. {name} ({gpu}) - {config_file}")
+                gpu = config.get("resources", {}).get("gpu_type", "any")
+                var_str = f" ({', '.join(f'{k}={v}' for k, v in variables.items())})" if variables else ""
+                console.print(f"  {i+1}. {name}{var_str} ({gpu}) - {config_file}")
             except Exception as e:
                 console.print(f"  {i+1}. [red]ERROR[/red]: {config_file} - {e}")
         return
@@ -60,12 +115,12 @@ async def batch_submit(
     # Track submitted jobs
     submitted = []
     failed = []
-    pending = list(config_files)
+    pending = list(job_entries)
 
     # Submit with controlled parallelism
     running_tasks = []
 
-    async def submit_one(config_file: Path):
+    async def submit_one(config_file: Path, variables: dict[str, str] = None):
         """Submit a single job and return (config_file, success, error)."""
         try:
             # Load config to get job name
@@ -76,10 +131,13 @@ async def batch_submit(
                 config["project"] = project
 
             job_name = config.get("name", config_file.stem)
+            if variables:
+                var_str = "_".join(f"{v}" for v in variables.values())
+                job_name = f"{job_name}-{var_str}"
             console.print(f"[blue]Submitting:[/blue] {job_name}")
 
-            # Call submit_job but don't wait
-            await submit_job(config_file, None, wait=False)
+            # Call submit_job with variables
+            await submit_job(config_file, None, wait=False, quiet=True, variables=variables or None)
             return (config_file, True, None)
         except Exception as e:
             return (config_file, False, str(e))
@@ -91,13 +149,13 @@ async def batch_submit(
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Submitting jobs...", total=len(config_files))
+        task = progress.add_task("Submitting jobs...", total=len(job_entries))
 
         while pending or running_tasks:
             # Start new tasks up to max_parallel
             while pending and len(running_tasks) < max_parallel:
-                config_file = pending.pop(0)
-                task_coro = asyncio.create_task(submit_one(config_file))
+                config_file, variables = pending.pop(0)
+                task_coro = asyncio.create_task(submit_one(config_file, variables))
                 running_tasks.append(task_coro)
 
             if running_tasks:

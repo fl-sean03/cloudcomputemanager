@@ -41,7 +41,10 @@ import json
 import structlog
 from pydantic import BaseModel
 
+from sqlmodel import select
+
 from cloudcomputemanager.core.config import get_settings
+from cloudcomputemanager.core.database import init_db, get_session
 from cloudcomputemanager.core.models import (
     Job,
     JobStatus,
@@ -49,6 +52,7 @@ from cloudcomputemanager.core.models import (
     CheckpointConfig,
     SyncConfig,
     Budget,
+    Checkpoint,
 )
 from cloudcomputemanager.providers.vast import VastProvider
 from cloudcomputemanager.checkpoint import CheckpointOrchestrator
@@ -118,9 +122,10 @@ class JobSpec(BaseModel):
     # Optional: packages to deploy (alternative to image)
     packages: list[str] = []
 
-    # Resources (smart defaults)
-    gpu_type: str = "RTX_4090"
+    # Resources (no hardcoded defaults - user must specify or use template defaults)
+    gpu_type: Optional[str] = None  # None = any available GPU type
     gpu_count: int = 1
+    gpu_memory_min: Optional[int] = None  # None = provider default (8GB)
     disk_gb: int = 100
 
     # Checkpointing (enabled by default)
@@ -144,17 +149,23 @@ class JobSpec(BaseModel):
 
     def to_job_config(self) -> dict:
         """Convert to full job configuration dict."""
+        resources = {
+            "gpu_count": self.gpu_count,
+            "disk_gb": self.disk_gb,
+        }
+        # Only include optional fields if specified
+        if self.gpu_type is not None:
+            resources["gpu_type"] = self.gpu_type
+        if self.gpu_memory_min is not None:
+            resources["gpu_memory_min"] = self.gpu_memory_min
+
         return {
             "name": self.name,
             "project": self.project,
             "image": self.image,
             "command": self.command,
             "packages": self.packages,
-            "resources": {
-                "gpu_type": self.gpu_type,
-                "gpu_count": self.gpu_count,
-                "disk_gb": self.disk_gb,
-            },
+            "resources": resources,
             "checkpoint": {
                 "enabled": self.checkpoint_enabled,
                 "interval_minutes": self.checkpoint_interval_minutes,
@@ -255,19 +266,38 @@ class CloudComputeManagerAgent:
 
     async def _initialize(self) -> None:
         """Initialize components."""
+        # Initialize database for persistence
+        await init_db()
+
         self._provider = VastProvider(api_key=self._api_key)
         self._checkpoint_orchestrator = CheckpointOrchestrator(self._provider)
         self._sync_engine = SyncEngine(self._provider)
         self._package_deployer = PackageDeployer(self._provider)
 
-        logger.info("CloudComputeManagerAgent initialized")
+        # Load active jobs from database
+        async with get_session() as session:
+            stmt = select(Job).where(Job.status.in_([
+                JobStatus.RUNNING,
+                JobStatus.PENDING,
+                JobStatus.PROVISIONING,
+                JobStatus.CHECKPOINTING,
+                JobStatus.RECOVERING,
+            ]))
+            result = await session.execute(stmt)
+            for job in result.scalars().all():
+                self._active_jobs[job.job_id] = job
+                logger.info("Loaded active job from database", job_id=job.job_id)
+
+        logger.info("CloudComputeManagerAgent initialized", active_jobs=len(self._active_jobs))
 
     async def _cleanup(self) -> None:
         """Cleanup resources."""
         # Stop any running sync/checkpoint loops
         for job_id in list(self._active_jobs.keys()):
-            await self._sync_engine.stop_periodic_sync(job_id)
-            await self._checkpoint_orchestrator.stop_periodic_checkpoint(job_id)
+            if self._sync_engine:
+                await self._sync_engine.stop_periodic_sync(job_id)
+            if self._checkpoint_orchestrator:
+                await self._checkpoint_orchestrator.stop_periodic_checkpoint(job_id)
 
         logger.info("CloudComputeManagerAgent cleaned up")
 
@@ -379,9 +409,15 @@ class CloudComputeManagerAgent:
             checkpoint_json=json.dumps(config["checkpoint"]),
             sync_json=json.dumps(config["sync"]),
             budget_json=json.dumps(config["budget"]),
-            tags=spec.tags,
+            tags_json=json.dumps(spec.tags),
             started_at=datetime.utcnow(),
         )
+
+        # Persist to database
+        async with get_session() as session:
+            session.add(job)
+            await session.commit()
+            await session.refresh(job)
 
         self._active_jobs[job.job_id] = job
 
@@ -393,9 +429,11 @@ class CloudComputeManagerAgent:
             message=f"Job submitted: {job.job_id}",
         ))
 
-        # Start the command
-        bg_cmd = f'cd /workspace && nohup {spec.command} > /workspace/job.log 2>&1 &'
-        await self._provider.execute_command(instance.instance_id, bg_cmd)
+        # Deploy and run SIGTERM-aware wrapper script
+        from cloudcomputemanager.core.wrapper import build_deploy_commands
+        setup_cmd, run_cmd = build_deploy_commands(spec.command)
+        await self._provider.execute_command(instance.instance_id, setup_cmd)
+        await self._provider.execute_command(instance.instance_id, run_cmd)
 
         self._emit_event(AgentEvent(
             type=EventType.JOB_STARTED,
@@ -550,20 +588,16 @@ class CloudComputeManagerAgent:
 
         elapsed = 0
         while elapsed < timeout:
-            # Check if process is still running
+            # Check for completion via exit code sentinel file
             exit_code, stdout, _ = await self._provider.execute_command(
                 job.instance_id,
-                "pgrep -f 'lmp\\|python\\|mpirun' > /dev/null && echo 'running' || echo 'done'"
+                "cat /workspace/.ccm_exit_code 2>/dev/null || echo 'running'",
             )
 
-            if "done" in stdout:
-                # Job finished - get exit code
-                _, exit_out, _ = await self._provider.execute_command(
-                    job.instance_id,
-                    "cat /workspace/.exit_code 2>/dev/null || echo '0'"
-                )
+            if stdout.strip() != "running":
+                # Job finished - parse exit code from sentinel
                 try:
-                    final_exit_code = int(exit_out.strip())
+                    final_exit_code = int(stdout.strip())
                 except ValueError:
                     final_exit_code = 0
 
@@ -577,6 +611,12 @@ class CloudComputeManagerAgent:
                 success = final_exit_code == 0
                 job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
                 job.completed_at = datetime.utcnow()
+                job.exit_code = final_exit_code
+
+                # Persist to database
+                async with get_session() as session:
+                    session.add(job)
+                    await session.commit()
 
                 self._emit_event(AgentEvent(
                     type=EventType.JOB_COMPLETED if success else EventType.JOB_FAILED,
@@ -606,6 +646,14 @@ class CloudComputeManagerAgent:
             instance = await self._provider.get_instance(job.instance_id)
             if not instance or instance.status.value not in ["running", "starting"]:
                 # Instance preempted or failed
+                job.status = JobStatus.FAILED
+                job.error_message = "Instance was preempted"
+
+                # Persist to database
+                async with get_session() as session:
+                    session.add(job)
+                    await session.commit()
+
                 self._emit_event(AgentEvent(
                     type=EventType.INSTANCE_PREEMPTED,
                     timestamp=datetime.utcnow(),
@@ -652,9 +700,200 @@ class CloudComputeManagerAgent:
             await self._provider.terminate_instance(job.instance_id)
 
         job.status = JobStatus.CANCELLED
+
+        # Persist cancellation
+        async with get_session() as session:
+            session.add(job)
+            await session.commit()
+
         del self._active_jobs[job_id]
 
         return True
+
+    async def list_jobs(
+        self,
+        status: Optional[JobStatus] = None,
+        project: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List jobs from database.
+
+        Args:
+            status: Filter by status
+            project: Filter by project
+            limit: Maximum results
+
+        Returns:
+            List of job info dicts
+        """
+        async with get_session() as session:
+            stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
+
+            if status:
+                stmt = stmt.where(Job.status == status)
+            if project:
+                stmt = stmt.where(Job.project == project)
+
+            result = await session.execute(stmt)
+            jobs = result.scalars().all()
+
+            return [
+                {
+                    "job_id": j.job_id,
+                    "name": j.name,
+                    "project": j.project,
+                    "status": j.status.value,
+                    "instance_id": j.instance_id,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                    "started_at": j.started_at.isoformat() if j.started_at else None,
+                    "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                    "total_cost_usd": j.total_cost_usd,
+                    "exit_code": j.exit_code,
+                }
+                for j in jobs
+            ]
+
+    async def get_job(self, job_id: str) -> Optional[dict]:
+        """Get detailed job information.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            Job info dict or None if not found
+        """
+        # Check in-memory first
+        if job_id in self._active_jobs:
+            job = self._active_jobs[job_id]
+        else:
+            # Load from database
+            async with get_session() as session:
+                stmt = select(Job).where(Job.job_id == job_id)
+                result = await session.execute(stmt)
+                job = result.scalar_one_or_none()
+
+        if not job:
+            return None
+
+        # Get checkpoints for this job
+        async with get_session() as session:
+            stmt = select(Checkpoint).where(Checkpoint.job_id == job_id).order_by(Checkpoint.created_at.desc())
+            result = await session.execute(stmt)
+            checkpoints = result.scalars().all()
+
+        return {
+            "job_id": job.job_id,
+            "name": job.name,
+            "project": job.project,
+            "status": job.status.value,
+            "image": job.image,
+            "command": job.command,
+            "instance_id": job.instance_id,
+            "resources": job.resources,
+            "budget": job.budget,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "total_cost_usd": job.total_cost_usd,
+            "total_runtime_seconds": job.total_runtime_seconds,
+            "exit_code": job.exit_code,
+            "error_message": job.error_message,
+            "output_location": job.output_location,
+            "attempt_number": job.attempt_number,
+            "checkpoints": [
+                {
+                    "checkpoint_id": c.checkpoint_id,
+                    "created_at": c.created_at.isoformat(),
+                    "size_bytes": c.size_bytes,
+                    "verified": c.verified,
+                }
+                for c in checkpoints
+            ],
+        }
+
+    async def retry_job(self, job_id: str) -> Optional[Job]:
+        """Retry a failed job.
+
+        Args:
+            job_id: Job ID to retry
+
+        Returns:
+            New job or None if not retryable
+        """
+        job_info = await self.get_job(job_id)
+        if not job_info:
+            logger.warning("Job not found for retry", job_id=job_id)
+            return None
+
+        if job_info["status"] not in ["failed", "cancelled"]:
+            logger.warning("Job not in retryable state", job_id=job_id, status=job_info["status"])
+            return None
+
+        # Create new JobSpec from original
+        spec = JobSpec(
+            name=f"{job_info['name']}-retry",
+            command=job_info["command"],
+            image=job_info["image"],
+            gpu_type=job_info["resources"].get("gpu_type"),
+            gpu_count=job_info["resources"].get("gpu_count", 1),
+            disk_gb=job_info["resources"].get("disk_gb", 100),
+            max_cost_usd=job_info["budget"].get("max_cost_usd", 50.0),
+            max_hours=job_info["budget"].get("max_hours", 24),
+            max_hourly_rate=job_info["budget"].get("max_hourly_rate", 1.0),
+            project=job_info["project"],
+        )
+
+        logger.info("Retrying job", original_job_id=job_id, new_name=spec.name)
+        return await self.submit(spec)
+
+    async def get_costs(
+        self,
+        project: Optional[str] = None,
+        since_days: int = 30,
+    ) -> dict:
+        """Get cost breakdown.
+
+        Args:
+            project: Filter by project
+            since_days: Days of history
+
+        Returns:
+            Cost breakdown dict
+        """
+        from datetime import timedelta
+
+        cutoff = datetime.utcnow() - timedelta(days=since_days)
+
+        async with get_session() as session:
+            stmt = select(Job).where(Job.created_at >= cutoff)
+            if project:
+                stmt = stmt.where(Job.project == project)
+
+            result = await session.execute(stmt)
+            jobs = result.scalars().all()
+
+        total_cost = sum(j.total_cost_usd for j in jobs)
+        total_runtime = sum(j.total_runtime_seconds for j in jobs)
+
+        by_status = {}
+        by_project = {}
+
+        for j in jobs:
+            status = j.status.value
+            by_status[status] = by_status.get(status, 0) + j.total_cost_usd
+
+            proj = j.project or "unassigned"
+            by_project[proj] = by_project.get(proj, 0) + j.total_cost_usd
+
+        return {
+            "period_days": since_days,
+            "total_cost_usd": round(total_cost, 4),
+            "total_runtime_hours": round(total_runtime / 3600, 2),
+            "job_count": len(jobs),
+            "by_status": by_status,
+            "by_project": by_project,
+            "average_cost_per_job": round(total_cost / len(jobs), 4) if jobs else 0,
+        }
 
     # =========================================================================
     # Observation Helpers
@@ -743,11 +982,50 @@ class CloudComputeManagerAgent:
     # Resource Management
     # =========================================================================
 
+    async def get_ssh_credentials(self, job_id: str) -> Optional[dict]:
+        """Get direct SSH credentials for a job's instance.
+
+        Returns a dict with host, port, user, key_path so agents can
+        SSH directly without going through CCM's execute_command layer.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            Dict with SSH connection details, or None if unavailable
+        """
+        job = self._active_jobs.get(job_id)
+        if not job:
+            # Try loading from DB
+            async with get_session() as session:
+                stmt = select(Job).where(Job.job_id == job_id)
+                result = await session.execute(stmt)
+                job = result.scalar_one_or_none()
+
+        if not job or not job.instance_id:
+            return None
+
+        instance = await self._provider.get_instance(job.instance_id)
+        if not instance:
+            return None
+
+        settings = get_settings()
+        key_path = str(settings.ssh_key_path) if settings.ssh_key_path.exists() else None
+
+        return {
+            "host": instance.ssh_host,
+            "port": instance.ssh_port,
+            "user": instance.ssh_user,
+            "key_path": key_path,
+            "instance_id": instance.instance_id,
+            "job_id": job_id,
+        }
+
     async def search_gpus(
         self,
         gpu_type: Optional[str] = None,
         max_price: Optional[float] = None,
-        min_memory_gb: int = 16,
+        min_memory_gb: Optional[int] = None,
     ) -> list[dict]:
         """Search available GPU offers.
 

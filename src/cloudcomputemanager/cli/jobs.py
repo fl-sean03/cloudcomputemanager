@@ -114,6 +114,8 @@ async def submit_job(
     name_override: Optional[str],
     wait: bool,
     template_name: Optional[str] = None,
+    quiet: bool = False,
+    variables: Optional[dict[str, str]] = None,
 ) -> None:
     """Submit a job from a YAML configuration file.
 
@@ -122,11 +124,16 @@ async def submit_job(
         name_override: Optional name to override config
         wait: Whether to wait for job completion
         template_name: Optional template to use as base config
+        quiet: If True, suppress Rich displays (for batch mode)
+        variables: Optional dict of variable substitutions for ${VAR} in YAML
     """
     from cloudcomputemanager.core.templates import load_config_with_template, validate_job_config
+    import structlog
+    logger = structlog.get_logger(__name__)
 
-    # Load configuration (with optional template merging)
-    config = load_config_with_template(config_file, template_name)
+    # Load configuration (with optional template merging and variable substitution)
+    # Note: load_config_with_template now normalizes resource keys
+    config = load_config_with_template(config_file, template_name, variables=variables)
 
     # Validate configuration
     errors = validate_job_config(config)
@@ -136,16 +143,24 @@ async def submit_job(
 
     job_name = name_override or config.get("name", config_file.stem)
 
-    console.print(f"\n[bold]Submitting job:[/bold] {job_name}")
+    if not quiet:
+        console.print(f"\n[bold]Submitting job:[/bold] {job_name}")
+    else:
+        logger.info("Submitting job", job_name=job_name)
 
     # Parse configuration
     image = config.get("image", "vastai/pytorch:latest")
     command = config.get("command", "")
+    setup_commands = config.get("setup")  # New: setup script before job
     resources = config.get("resources", {})
     checkpoint_config = config.get("checkpoint", {})
     sync_config = config.get("sync", {})
     budget = config.get("budget", {})
     upload_config = config.get("upload", {})
+    stages = config.get("stages", [])
+    progress_config = config.get("progress", {})
+    notifications = config.get("notifications", {})
+    provisioning_timeout = config.get("provisioning", {}).get("timeout", 300)
 
     # Initialize database
     await init_db()
@@ -153,54 +168,97 @@ async def submit_job(
     # Search for offers
     provider = VastProvider()
 
-    with console.status("Searching for GPU offers..."):
-        offers = await provider.search_offers(
-            gpu_type=resources.get("gpu_type", "RTX_4090"),
-            gpu_count=resources.get("gpu_count", 1),
-            gpu_memory_min=resources.get("gpu_memory_min", 16),
-            disk_gb_min=resources.get("disk_gb", 50),
-            max_hourly_rate=budget.get("max_hourly_rate"),
-        )
+    # Use user-specified values, falling back to provider defaults only if not specified
+    # Note: resources keys are already normalized by load_config_with_template
+    search_params = {
+        "gpu_type": resources.get("gpu_type"),  # None = any GPU type
+        "gpu_count": resources.get("gpu_count", 1),
+        "gpu_memory_min": resources.get("gpu_memory_min"),  # None = use provider default
+        "disk_gb_min": resources.get("disk_gb", 50),
+        "max_hourly_rate": budget.get("max_hourly_rate"),
+        "cpu_cores_min": resources.get("cpu_cores"),  # Filter by minimum CPU cores
+    }
+
+    if not quiet:
+        with console.status("Searching for GPU offers..."):
+            offers = await provider.search_offers(**search_params)
+    else:
+        logger.info("Searching for GPU offers", **{k: v for k, v in search_params.items() if v is not None})
+        offers = await provider.search_offers(**search_params)
 
     if not offers:
-        console.print("[red]No suitable offers found![/red]")
+        error_msg = f"No suitable offers found for: gpu_type={search_params['gpu_type']}, gpu_memory_min={search_params['gpu_memory_min']}, max_rate={search_params['max_hourly_rate']}"
+        if not quiet:
+            console.print(f"[red]{error_msg}[/red]")
+        else:
+            logger.error(error_msg)
         return
 
     # Show best offer
     best = offers[0]
-    console.print(f"\n[green]Found {len(offers)} offers. Best:[/green]")
-    console.print(f"  GPU: {best.gpu_type} x{best.gpu_count}")
-    console.print(f"  Price: ${best.hourly_rate:.3f}/hr")
-    console.print(f"  Location: {best.location}")
+    if not quiet:
+        console.print(f"\n[green]Found {len(offers)} offers. Best:[/green]")
+        console.print(f"  GPU: {best.gpu_type} x{best.gpu_count}")
+        console.print(f"  Price: ${best.hourly_rate:.3f}/hr")
+        console.print(f"  Location: {best.location}")
+    else:
+        logger.info("Found offers", count=len(offers), best_gpu=best.gpu_type, best_price=best.hourly_rate)
 
-    # Create instance
-    with console.status("Creating instance..."):
-        instance = await provider.create_instance(
-            offer_id=best.offer_id,
-            image=image,
-            disk_gb=resources.get("disk_gb", 50),
-        )
+    # Create instance (pass setup commands as startup_script if provided)
+    create_kwargs = {
+        "offer_id": best.offer_id,
+        "image": image,
+        "disk_gb": resources.get("disk_gb", 50),
+    }
+    if setup_commands:
+        create_kwargs["startup_script"] = setup_commands
 
-    console.print(f"\n[green]Instance created:[/green] {instance.instance_id}")
-    console.print(f"  SSH: ssh -p {instance.ssh_port} {instance.ssh_user}@{instance.ssh_host}")
+    if not quiet:
+        with console.status("Creating instance..."):
+            instance = await provider.create_instance(**create_kwargs)
+    else:
+        logger.info("Creating instance", offer_id=best.offer_id, image=image, has_setup=bool(setup_commands))
+        instance = await provider.create_instance(**create_kwargs)
 
-    # Wait for instance to be ready
-    timeout = resources.get("startup_timeout", 300)
-    with console.status(f"Waiting for instance to be ready (timeout: {timeout}s)..."):
-        ready = await provider.wait_for_ready(instance.instance_id, timeout=timeout)
+    if not quiet:
+        console.print(f"\n[green]Instance created:[/green] {instance.instance_id}")
+        console.print(f"  SSH: ssh -p {instance.ssh_port} {instance.ssh_user}@{instance.ssh_host}")
+    else:
+        logger.info("Instance created", instance_id=instance.instance_id)
+
+    # Wait for instance to be ready (using configurable provisioning timeout)
+    if not quiet:
+        with console.status(f"Waiting for instance to be ready (timeout: {provisioning_timeout}s)..."):
+            ready = await provider.wait_for_ready(instance.instance_id, timeout=provisioning_timeout)
+    else:
+        logger.info("Waiting for instance", instance_id=instance.instance_id, timeout=provisioning_timeout)
+        ready = await provider.wait_for_ready(instance.instance_id, timeout=provisioning_timeout)
 
     if not ready:
-        console.print(f"[red]Instance {instance.instance_id} failed to start within {timeout}s![/red]")
-        console.print("[yellow]Destroying instance to prevent charges...[/yellow]")
+        error_msg = f"Instance {instance.instance_id} failed to start within {provisioning_timeout}s"
+        if not quiet:
+            console.print(f"[red]{error_msg}![/red]")
+            console.print("[yellow]Destroying instance to prevent charges...[/yellow]")
+        else:
+            logger.error(error_msg)
         try:
             await provider.terminate_instance(instance.instance_id)
-            console.print("[green]Instance destroyed successfully.[/green]")
+            if not quiet:
+                console.print("[green]Instance destroyed successfully.[/green]")
+            else:
+                logger.info("Instance destroyed", instance_id=instance.instance_id)
         except Exception as e:
-            console.print(f"[red]Failed to destroy instance: {e}[/red]")
-            console.print(f"[yellow]Manually destroy with: vastai destroy instance {instance.instance_id}[/yellow]")
+            if not quiet:
+                console.print(f"[red]Failed to destroy instance: {e}[/red]")
+                console.print(f"[yellow]Manually destroy with: vastai destroy instance {instance.instance_id}[/yellow]")
+            else:
+                logger.error("Failed to destroy instance", instance_id=instance.instance_id, error=str(e))
         return
 
-    console.print("[green]Instance is ready![/green]")
+    if not quiet:
+        console.print("[green]Instance is ready![/green]")
+    else:
+        logger.info("Instance ready", instance_id=instance.instance_id)
 
     # Upload files if configured
     if upload_config.get("source"):
@@ -208,13 +266,26 @@ async def submit_job(
         dest_path = upload_config.get("destination", "/workspace")
 
         if not source_path.exists():
-            console.print(f"[red]Upload source not found: {source_path}[/red]")
-            console.print("[yellow]Destroying instance...[/yellow]")
+            error_msg = f"Upload source not found: {source_path}"
+            if not quiet:
+                console.print(f"[red]{error_msg}[/red]")
+                console.print("[yellow]Destroying instance...[/yellow]")
+            else:
+                logger.error(error_msg)
             await provider.terminate_instance(instance.instance_id)
             return
 
-        console.print(f"\n[bold]Uploading files:[/bold] {source_path} -> {dest_path}")
-        with console.status("Uploading files..."):
+        if not quiet:
+            console.print(f"\n[bold]Uploading files:[/bold] {source_path} -> {dest_path}")
+            with console.status("Uploading files..."):
+                upload_success = await provider.rsync_upload(
+                    instance.instance_id,
+                    str(source_path) + "/",
+                    dest_path + "/",
+                    exclude=upload_config.get("exclude", []),
+                )
+        else:
+            logger.info("Uploading files", source=str(source_path), dest=dest_path)
             upload_success = await provider.rsync_upload(
                 instance.instance_id,
                 str(source_path) + "/",
@@ -223,91 +294,114 @@ async def submit_job(
             )
 
         if not upload_success:
-            console.print("[red]File upload failed![/red]")
-            console.print("[yellow]Destroying instance...[/yellow]")
+            error_msg = "File upload failed"
+            if not quiet:
+                console.print(f"[red]{error_msg}![/red]")
+                console.print("[yellow]Destroying instance...[/yellow]")
+            else:
+                logger.error(error_msg)
             await provider.terminate_instance(instance.instance_id)
             return
 
-        console.print("[green]Files uploaded successfully![/green]")
+        if not quiet:
+            console.print("[green]Files uploaded successfully![/green]")
+        else:
+            logger.info("Files uploaded successfully")
 
     # Create job record
     import json
+
+    # For multi-stage jobs, the first stage command is used if stages are defined
+    effective_command = command
+    if stages:
+        effective_command = stages[0].get("command", command)
 
     job = Job(
         name=job_name,
         project=config.get("project"),
         status=JobStatus.RUNNING,
         image=image,
-        command=command,
+        command=effective_command,
+        setup_commands=setup_commands,
+        provisioning_timeout=provisioning_timeout,
+        stages_json=json.dumps(stages),
+        current_stage=0,
+        progress_json=json.dumps(progress_config),
+        notifications_json=json.dumps(notifications),
         resources_json=json.dumps(resources),
         checkpoint_json=json.dumps(checkpoint_config),
         sync_json=json.dumps(sync_config),
         budget_json=json.dumps(budget),
         instance_id=instance.instance_id,
+        started_at=datetime.utcnow(),
     )
 
     # Save to database
     async with get_session() as session:
         session.add(job)
 
-    console.print(f"\n[bold green]Job submitted successfully![/bold green]")
-    console.print(f"  Job ID: {job.job_id}")
-    console.print(f"  Instance: {instance.instance_id}")
+    if not quiet:
+        console.print(f"\n[bold green]Job submitted successfully![/bold green]")
+        console.print(f"  Job ID: {job.job_id}")
+        console.print(f"  Instance: {instance.instance_id}")
+    else:
+        logger.info("Job submitted", job_id=job.job_id, instance_id=instance.instance_id)
 
     # Start the job
-    if command:
-        console.print("\n[bold]Starting job...[/bold]")
+    if effective_command:
+        if not quiet:
+            console.print("\n[bold]Starting job...[/bold]")
+        else:
+            logger.info("Starting job", job_id=job.job_id)
 
-        # For multi-line commands, write to a script file and execute it
-        # The wrapper script captures exit code for completion detection
-        import base64
-        wrapper_script = f'''#!/bin/bash
-# CCM Job Wrapper - captures exit code for completion detection
-set -e
-cd /workspace
+        # Deploy and run SIGTERM-aware wrapper script
+        from cloudcomputemanager.core.wrapper import build_deploy_commands
+        setup_cmd, run_cmd = build_deploy_commands(effective_command)
 
-# Run the actual job
-{command}
-JOB_EXIT_CODE=$?
-
-# Write exit code for CCM to detect completion
-echo $JOB_EXIT_CODE > /workspace/.ccm_exit_code
-echo "Job completed with exit code $JOB_EXIT_CODE" >> /workspace/job.log
-exit $JOB_EXIT_CODE
-'''
-        script_b64 = base64.b64encode(wrapper_script.encode()).decode()
-
-        # Write script, make executable, and run in background
-        setup_cmd = f"echo {script_b64} | base64 -d > /workspace/run_job.sh && chmod +x /workspace/run_job.sh"
         exit_code, stdout, stderr = await provider.execute_command(
             instance.instance_id, setup_cmd
         )
 
         if exit_code != 0:
-            console.print(f"[red]Failed to create job script: {stderr}[/red]")
+            error_msg = f"Failed to create job script: {stderr}"
+            if not quiet:
+                console.print(f"[red]{error_msg}[/red]")
+            else:
+                logger.error(error_msg)
         else:
-            # Run the script in background with nohup
-            run_cmd = "cd /workspace && nohup bash /workspace/run_job.sh > /workspace/job.log 2>&1 &"
             exit_code, stdout, stderr = await provider.execute_command(
                 instance.instance_id, run_cmd
             )
 
             if exit_code == 0:
-                console.print("[green]Job started in background[/green]")
+                if not quiet:
+                    console.print("[green]Job started in background[/green]")
+                else:
+                    logger.info("Job started in background", job_id=job.job_id)
             else:
-                console.print(f"[red]Failed to start job: {stderr}[/red]")
+                error_msg = f"Failed to start job: {stderr}"
+                if not quiet:
+                    console.print(f"[red]{error_msg}[/red]")
+                else:
+                    logger.error(error_msg)
 
     # Show sync info
     if sync_config.get("enabled", True):
         settings = get_settings()
         sync_dir = settings.sync_local_path / job.job_id
-        console.print(f"\n[bold]Sync directory:[/bold] {sync_dir}")
+        if not quiet:
+            console.print(f"\n[bold]Sync directory:[/bold] {sync_dir}")
+        else:
+            logger.info("Sync directory", path=str(sync_dir))
 
     # Auto-terminate setting from config (default: True)
     auto_terminate = config.get("auto_terminate", True)
 
     if wait:
-        console.print("\n[dim]Waiting for job completion... (Ctrl+C to detach)[/dim]")
+        if not quiet:
+            console.print("\n[dim]Waiting for job completion... (Ctrl+C to detach)[/dim]")
+        else:
+            logger.info("Waiting for job completion", job_id=job.job_id)
         try:
             completed, exit_code = await wait_for_job_completion(
                 provider, job, instance.instance_id, timeout=budget.get("max_hours", 24) * 3600
@@ -327,12 +421,21 @@ exit $JOB_EXIT_CODE
                         session.add(db_job)
 
                 if exit_code == 0:
-                    console.print("[bold green]Job completed successfully![/bold green]")
+                    if not quiet:
+                        console.print("[bold green]Job completed successfully![/bold green]")
+                    else:
+                        logger.info("Job completed successfully", job_id=job.job_id)
                 else:
-                    console.print(f"[bold red]Job failed with exit code {exit_code}[/bold red]")
+                    if not quiet:
+                        console.print(f"[bold red]Job failed with exit code {exit_code}[/bold red]")
+                    else:
+                        logger.error("Job failed", job_id=job.job_id, exit_code=exit_code)
 
                 # Final sync
-                console.print("\n[bold]Syncing final results...[/bold]")
+                if not quiet:
+                    console.print("\n[bold]Syncing final results...[/bold]")
+                else:
+                    logger.info("Syncing final results", job_id=job.job_id)
                 sync_dir = settings.sync_local_path / job.job_id
                 sync_dir.mkdir(parents=True, exist_ok=True)
                 await provider.rsync_download(
@@ -341,16 +444,26 @@ exit $JOB_EXIT_CODE
                     str(sync_dir) + "/",
                     exclude=sync_config.get("exclude_patterns", []),
                 )
-                console.print(f"[green]Results synced to: {sync_dir}[/green]")
+                if not quiet:
+                    console.print(f"[green]Results synced to: {sync_dir}[/green]")
+                else:
+                    logger.info("Results synced", path=str(sync_dir))
 
                 # Auto-terminate if enabled
                 if auto_terminate:
-                    console.print("\n[bold]Terminating instance...[/bold]")
+                    if not quiet:
+                        console.print("\n[bold]Terminating instance...[/bold]")
                     await provider.terminate_instance(instance.instance_id)
-                    console.print("[green]Instance terminated.[/green]")
+                    if not quiet:
+                        console.print("[green]Instance terminated.[/green]")
+                    else:
+                        logger.info("Instance terminated", instance_id=instance.instance_id)
         except KeyboardInterrupt:
-            console.print("\n[yellow]Detached from job. Job continues running.[/yellow]")
-            console.print(f"Check status with: ccm jobs status {job.job_id}")
+            if not quiet:
+                console.print("\n[yellow]Detached from job. Job continues running.[/yellow]")
+                console.print(f"Check status with: ccm jobs status {job.job_id}")
+            else:
+                logger.info("Detached from job", job_id=job.job_id)
 
 
 async def list_jobs(
@@ -799,3 +912,173 @@ async def recover_jobs(job_id: Optional[str] = None) -> None:
                 console.print(f"    [red]Error[/red] - {e}")
 
         console.print("\n[bold]Recovery complete[/bold]")
+
+
+async def reconnect_jobs(job_id: Optional[str] = None) -> None:
+    """Reconnect to jobs after daemon downtime.
+
+    Checks each active job's instance status, reads exit codes,
+    syncs results if completed, and updates DB state. Works
+    entirely without the daemon — talks directly to Vast.ai API.
+    """
+    await init_db()
+
+    from sqlmodel import select
+
+    provider = VastProvider()
+    settings = get_settings()
+
+    # Find target jobs
+    async with get_session() as session:
+        if job_id:
+            stmt = select(Job).where(Job.job_id == job_id)
+        else:
+            stmt = select(Job).where(Job.status.in_([
+                JobStatus.RUNNING, JobStatus.RECOVERING,
+                JobStatus.CHECKPOINTING, JobStatus.PROVISIONING,
+            ]))
+        result = await session.execute(stmt)
+        jobs = result.scalars().all()
+
+    if not jobs:
+        console.print("[yellow]No active jobs to reconnect.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Reconnecting {len(jobs)} job(s)...[/bold]\n")
+
+    for job in jobs:
+        await _reconnect_single_job(job, provider, settings)
+
+
+async def _reconnect_single_job(job: Job, provider: VastProvider, settings) -> None:
+    """Reconnect to a single job, rehydrating state from its instance."""
+    console.print(f"[bold]{job.name}[/bold] ({job.job_id})")
+
+    if not job.instance_id:
+        console.print("  [red]No instance ID — cannot reconnect[/red]\n")
+        return
+
+    console.print(f"  Instance: {job.instance_id}")
+
+    # Step 1: Check instance status via Vast.ai API
+    try:
+        instance = await provider.get_instance(job.instance_id)
+    except Exception as e:
+        console.print(f"  [red]Cannot reach Vast.ai API: {e}[/red]\n")
+        return
+
+    if instance is None:
+        console.print("  [red]Instance not found (destroyed/expired)[/red]")
+        async with get_session() as session:
+            from sqlmodel import select as sel
+            stmt = sel(Job).where(Job.job_id == job.job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job:
+                db_job.status = JobStatus.FAILED
+                db_job.error_message = "Instance not found on reconnect"
+                db_job.completed_at = datetime.utcnow()
+                session.add(db_job)
+        sync_dir = settings.sync_local_path / job.job_id
+        if sync_dir.exists():
+            console.print(f"  [yellow]Local sync data at: {sync_dir}[/yellow]")
+        console.print()
+        return
+
+    console.print(f"  Instance status: {instance.status.value}")
+
+    from cloudcomputemanager.providers.base import ProviderStatus
+    if instance.status not in (ProviderStatus.RUNNING, ProviderStatus.STARTING):
+        console.print(f"  [yellow]Instance is {instance.status.value} — marking job for recovery[/yellow]")
+        async with get_session() as session:
+            from sqlmodel import select as sel
+            stmt = sel(Job).where(Job.job_id == job.job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job and db_job.attempt_number < 5:
+                db_job.status = JobStatus.RECOVERING
+                db_job.error_message = f"Instance {instance.status.value} on reconnect"
+                session.add(db_job)
+                console.print("  [yellow]Marked as RECOVERING — run `ccm jobs recover` to retry[/yellow]")
+            elif db_job:
+                db_job.status = JobStatus.FAILED
+                db_job.error_message = f"Instance {instance.status.value}, max attempts reached"
+                db_job.completed_at = datetime.utcnow()
+                session.add(db_job)
+                console.print("  [red]Marked as FAILED (max recovery attempts)[/red]")
+        console.print()
+        return
+
+    # Step 2: Instance is running — check exit code sentinel
+    completed, exit_code = await check_job_completion(provider, job.instance_id)
+
+    if completed:
+        status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
+        color = "green" if exit_code == 0 else "red"
+        console.print(f"  [{color}]Job finished with exit code {exit_code}[/{color}]")
+
+        # Check preemption marker
+        try:
+            rc, stdout, _ = await provider.execute_command(
+                job.instance_id,
+                "cat /workspace/.ccm_preempted 2>/dev/null || echo 'none'",
+            )
+            if stdout.strip() != "none":
+                console.print(f"  [yellow]Preemption detected: {stdout.strip()}[/yellow]")
+        except Exception:
+            pass
+
+        # Sync results
+        console.print("  Syncing results...")
+        sync_config = job.sync_config or {}
+        sync_dir = settings.sync_local_path / job.job_id
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        success = await provider.rsync_download(
+            job.instance_id,
+            sync_config.get("source", "/workspace") + "/",
+            str(sync_dir) + "/",
+            exclude=sync_config.get("exclude_patterns", []),
+        )
+        if success:
+            console.print(f"  [green]Synced to: {sync_dir}[/green]")
+        else:
+            console.print("  [red]Sync failed[/red]")
+
+        # Update DB
+        async with get_session() as session:
+            from sqlmodel import select as sel
+            stmt = sel(Job).where(Job.job_id == job.job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job:
+                db_job.status = status
+                db_job.exit_code = exit_code
+                db_job.completed_at = datetime.utcnow()
+                session.add(db_job)
+
+        console.print(f"  [dim]Terminate with: ccm instances terminate {job.instance_id}[/dim]")
+    else:
+        # Job is still running
+        console.print("  [green]Job is still running[/green]")
+
+        # Read heartbeat
+        try:
+            rc, stdout, _ = await provider.execute_command(
+                job.instance_id,
+                "cat /workspace/.ccm_heartbeat 2>/dev/null || echo 'no heartbeat'",
+            )
+            console.print(f"  Heartbeat: {stdout.strip()}")
+        except Exception:
+            pass
+
+        # Read last log line
+        try:
+            rc, stdout, _ = await provider.execute_command(
+                job.instance_id,
+                "tail -1 /workspace/job.log 2>/dev/null || echo 'no logs'",
+            )
+            console.print(f"  Last log: {stdout.strip()[:100]}")
+        except Exception:
+            pass
+
+    console.print()

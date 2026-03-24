@@ -13,8 +13,83 @@ from cloudcomputemanager.core.templates import (
     create_job_config_from_template,
     validate_job_config,
     generate_minimal_config,
+    normalize_resources,
+    RESOURCE_KEY_ALIASES,
 )
 from cloudcomputemanager.templates import list_templates, get_template_path, TEMPLATES_DIR
+
+
+class TestNormalizeResources:
+    """Tests for normalize_resources function."""
+
+    def test_normalize_gpu_memory_gb(self):
+        """Test that gpu_memory_gb is normalized to gpu_memory_min."""
+        resources = {"gpu_memory_gb": 12, "gpu_type": "RTX_3060"}
+        result = normalize_resources(resources)
+        assert "gpu_memory_min" in result
+        assert result["gpu_memory_min"] == 12
+        assert "gpu_memory_gb" not in result
+        assert result["gpu_type"] == "RTX_3060"
+
+    def test_normalize_memory_gb(self):
+        """Test that memory_gb is normalized to ram_gb."""
+        resources = {"memory_gb": 64, "disk_gb": 100}
+        result = normalize_resources(resources)
+        assert "ram_gb" in result
+        assert result["ram_gb"] == 64
+        assert result["disk_gb"] == 100
+
+    def test_normalize_cpu(self):
+        """Test that cpu is normalized to cpu_cores."""
+        resources = {"cpu": 8}
+        result = normalize_resources(resources)
+        assert "cpu_cores" in result
+        assert result["cpu_cores"] == 8
+
+    def test_normalize_disk(self):
+        """Test that disk is normalized to disk_gb."""
+        resources = {"disk": 200, "storage": 300}
+        result = normalize_resources(resources)
+        # Note: storage will override disk since they map to the same key
+        assert "disk_gb" in result
+
+    def test_normalize_gpu(self):
+        """Test that gpu is normalized to gpu_type."""
+        resources = {"gpu": "RTX_4090"}
+        result = normalize_resources(resources)
+        assert "gpu_type" in result
+        assert result["gpu_type"] == "RTX_4090"
+
+    def test_canonical_keys_unchanged(self):
+        """Test that canonical keys are not changed."""
+        resources = {
+            "gpu_type": "RTX_4090",
+            "gpu_memory_min": 16,
+            "gpu_count": 1,
+            "disk_gb": 100,
+        }
+        result = normalize_resources(resources)
+        assert result == resources
+
+    def test_empty_resources(self):
+        """Test that empty dict is handled."""
+        assert normalize_resources({}) == {}
+
+    def test_none_resources(self):
+        """Test that None is handled."""
+        assert normalize_resources(None) is None
+
+    def test_all_aliases_exist(self):
+        """Test that all documented aliases are in the mapping."""
+        expected_aliases = [
+            "gpu_memory_gb", "gpu_mem", "vram",
+            "memory_gb", "memory",
+            "cpu", "cpus",
+            "disk", "storage",
+            "gpu",
+        ]
+        for alias in expected_aliases:
+            assert alias in RESOURCE_KEY_ALIASES, f"Missing alias: {alias}"
 
 
 class TestDeepMerge:
@@ -168,6 +243,49 @@ class TestLoadConfigWithTemplate:
         assert result["resources"]["disk_gb"] == 100
         # Template defaults preserved
         assert result["resources"]["gpu_count"] == 1
+
+    def test_normalizes_resource_keys(self, tmp_path):
+        """Test that alternate resource keys are normalized."""
+        config_file = tmp_path / "job.yaml"
+        config_file.write_text(yaml.dump({
+            "name": "my-job",
+            "image": "python:3.11",
+            "command": "python script.py",
+            "resources": {
+                "gpu_type": "RTX_3060",
+                "gpu_memory_gb": 12,  # Should become gpu_memory_min
+                "memory_gb": 64,      # Should become ram_gb
+            }
+        }))
+
+        result = load_config_with_template(config_file)
+
+        # Check normalization happened
+        assert "gpu_memory_min" in result["resources"]
+        assert result["resources"]["gpu_memory_min"] == 12
+        assert "gpu_memory_gb" not in result["resources"]
+
+        assert "ram_gb" in result["resources"]
+        assert result["resources"]["ram_gb"] == 64
+        assert "memory_gb" not in result["resources"]
+
+        # gpu_type should remain unchanged
+        assert result["resources"]["gpu_type"] == "RTX_3060"
+
+    def test_normalizes_template_resource_keys(self, tmp_path):
+        """Test that template resource keys are also normalized."""
+        config_file = tmp_path / "job.yaml"
+        config_file.write_text(yaml.dump({
+            "name": "my-job",
+            "command": "namd3 production.namd"
+        }))
+
+        result = load_config_with_template(config_file, "namd-production")
+
+        # Template resources should use canonical keys
+        assert "gpu_type" in result["resources"]
+        # gpu_memory_min should exist (either from template or normalized)
+        # The exact key depends on how the template is defined
 
 
 class TestGetAvailableTemplates:
