@@ -401,6 +401,19 @@ ccm env pack -n myenv -o env.tar.gz          # Create conda-pack tarball
 ccm env list                                  # List local conda envs
 ```
 
+### Known Limitations
+
+**Conda-pack and CUDA:** Conda-pack tarballs contain pre-compiled CUDA libraries
+(PTX code) for the GPU architecture where the pack was created. A pack built on
+an RTX 5080 (sm_120) will fail on an RTX 3060 (sm_86) with
+`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`. For GPU workloads like OpenMM, LAMMPS, or
+PyTorch, use `conda_env` strategy (slower but architecture-independent) or a
+pre-built Docker image. Conda-pack works fine for CPU-only and pure Python packages.
+
+**Provisioning timeout:** Complex environments (conda env with 20+ packages) can
+take 10-15 minutes to set up. CCM auto-adjusts the timeout based on strategy,
+but if you hit timeouts, increase `provisioning.timeout` in the job YAML.
+
 ### Implementation
 
 - `core/environment.py` — Parsing, validation, setup command generation
