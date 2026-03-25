@@ -315,9 +315,13 @@ async def job_logs_action(job_id: str):
 
     if job and job.instance_id:
         try:
+            # Try multiple common log locations
             rc, stdout, stderr = await provider.execute_command(
                 job.instance_id,
-                "tail -50 /workspace/job.log 2>/dev/null || echo 'No logs available'",
+                "tail -50 /workspace/job.log 2>/dev/null || "
+                "tail -50 /workspace/output/*.log 2>/dev/null || "
+                "tail -50 /workspace/*.log 2>/dev/null || "
+                "echo 'No log files found in /workspace/'",
                 timeout=15,
             )
             log_text = stdout if rc == 0 else f"Error: {stderr}"

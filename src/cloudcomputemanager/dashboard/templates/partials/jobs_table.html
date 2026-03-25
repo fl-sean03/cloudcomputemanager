@@ -63,12 +63,14 @@
                         hx-post="/dashboard/actions/cancel/{{ job.job_id }}"
                         hx-confirm="Cancel job '{{ job.name }}'? This cannot be undone."
                         hx-swap="none">Cancel</button>
+                {% if job.ssh_host and job.ssh_port %}
                 <button class="btn-sm"
-                        onclick="navigator.clipboard.writeText('ssh -p {{ job.ssh_port }} root@{{ job.ssh_host }}')">SSH</button>
+                        onclick="navigator.clipboard.writeText('ssh -p {{ job.ssh_port }} root@{{ job.ssh_host }}'); this.textContent='Copied!'; setTimeout(()=>this.textContent='SSH', 1500)">SSH</button>
+                {% endif %}
                 <button class="btn-sm"
                         hx-get="/dashboard/actions/logs/{{ job.job_id }}"
-                        hx-target="#detail-{{ job.job_id }}"
-                        hx-swap="innerHTML">Logs</button>
+                        hx-target="body"
+                        hx-swap="beforeend">Logs</button>
             </td>
         </tr>
         <tr>
