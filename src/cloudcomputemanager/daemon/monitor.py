@@ -499,12 +499,35 @@ class JobMonitor:
                     db_job = result.scalar_one_or_none()
                     if db_job:
                         metrics = _json.loads(db_job.metrics_json) if db_job.metrics_json != "{}" else {}
+
+                        # Compute rate (steps/second) from change since last update
+                        prev_step = metrics.get("current_step")
+                        prev_time = metrics.get("last_updated")
+                        steps_per_second = None
+                        if current_value is not None and prev_step is not None and prev_time:
+                            try:
+                                prev_dt = datetime.fromisoformat(prev_time)
+                                elapsed_secs = (datetime.utcnow() - prev_dt).total_seconds()
+                                if elapsed_secs > 5:  # Avoid division by tiny intervals
+                                    step_delta = current_value - prev_step
+                                    if step_delta > 0:
+                                        steps_per_second = step_delta / elapsed_secs
+                            except (ValueError, TypeError):
+                                pass
+
                         if current_value is not None:
                             metrics["current_step"] = current_value
                         if total_value:
                             metrics["total_steps"] = total_value
                         if progress_pct is not None:
                             metrics["progress_percent"] = round(progress_pct, 1)
+                        if steps_per_second is not None:
+                            metrics["steps_per_second"] = round(steps_per_second, 1)
+                            # ETA: remaining steps / rate
+                            if total_value and current_value is not None and steps_per_second > 0:
+                                remaining = total_value - current_value
+                                eta_hours = (remaining / steps_per_second) / 3600
+                                metrics["estimated_hours_remaining"] = round(eta_hours, 1)
                         metrics["last_updated"] = datetime.utcnow().isoformat()
                         db_job.metrics_json = _json.dumps(metrics)
                         session.add(db_job)

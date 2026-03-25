@@ -42,7 +42,7 @@
                     {{ job.name }}
                 </a>
             </td>
-            <td>{{ job.current_stage }}/{{ job.total_stages }}</td>
+            <td>{% if job.total_stages > 0 %}{{ job.current_stage + 1 }}/{{ job.total_stages }}{% else %}--{% endif %}</td>
             <td>
                 {% if job.progress_percent is not none %}
                 <div class="progress-bar">
@@ -66,8 +66,10 @@
                 <span class="badge badge-blue">syncing</span>
                 {% elif job.sync_status == 'failed' %}
                 <span class="badge badge-red">failed</span>
+                {% elif job.sync_status == 'sync_failed' %}
+                <span class="badge badge-red">failed</span>
                 {% else %}
-                <span class="badge badge-gray">--</span>
+                <span class="badge badge-gray">pending</span>
                 {% endif %}
             </td>
             <td class="actions-cell">
