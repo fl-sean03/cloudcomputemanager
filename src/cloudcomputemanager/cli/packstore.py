@@ -218,7 +218,7 @@ async def deploy_packages(
     table.add_column("Time", justify="right")
 
     for dep in result.deployments:
-        status_color = "green" if dep.status.value == "completed" else "red"
+        status_color = "green" if dep.status.value.upper() == "COMPLETED" else "red"
         table.add_row(
             dep.package_name,
             dep.variant_id,

@@ -147,11 +147,11 @@ class TestJob:
         assert job.attempt_number == 0
 
     def test_job_status_transitions(self):
-        """Test job status values."""
-        assert JobStatus.PENDING.value == "pending"
-        assert JobStatus.RUNNING.value == "running"
-        assert JobStatus.COMPLETED.value == "completed"
-        assert JobStatus.FAILED.value == "failed"
+        """Test job status values are uppercase for SQLAlchemy compatibility."""
+        assert JobStatus.PENDING.value == "PENDING"
+        assert JobStatus.RUNNING.value == "RUNNING"
+        assert JobStatus.COMPLETED.value == "COMPLETED"
+        assert JobStatus.FAILED.value == "FAILED"
 
     def test_job_resources_property(self):
         """Test job resources JSON parsing."""

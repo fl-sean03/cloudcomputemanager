@@ -153,7 +153,7 @@ class TestJobs:
         assert data["job_id"].startswith("job_")
         assert data["name"] == "test-lammps-run"
         assert data["project"] == "unit-tests"
-        assert data["status"] == "pending"
+        assert data["status"] == "PENDING"
         assert data["total_cost_usd"] == 0.0
 
     @pytest.mark.asyncio
@@ -174,7 +174,7 @@ class TestJobs:
         data = get_resp.json()
         assert data["job_id"] == job_id
         assert data["name"] == "retrieve-me"
-        assert data["status"] == "pending"
+        assert data["status"] == "PENDING"
 
     @pytest.mark.asyncio
     async def test_get_job_not_found(self, client: AsyncClient):

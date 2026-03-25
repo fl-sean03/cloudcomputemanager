@@ -19,29 +19,34 @@ from sqlmodel import SQLModel, Field
 
 
 class JobStatus(str, Enum):
-    """Status of a managed job."""
+    """Status of a managed job.
 
-    PENDING = "pending"
-    PROVISIONING = "provisioning"
-    RUNNING = "running"
-    CHECKPOINTING = "checkpointing"
-    RECOVERING = "recovering"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    BUDGET_EXCEEDED = "budget_exceeded"
+    Values are UPPERCASE to match SQLAlchemy's Enum column type mapping.
+    SQLAlchemy maps enum member names (not values) when reading from the DB,
+    so the stored values must match what SQLAlchemy expects on read-back.
+    """
+
+    PENDING = "PENDING"
+    PROVISIONING = "PROVISIONING"
+    RUNNING = "RUNNING"
+    CHECKPOINTING = "CHECKPOINTING"
+    RECOVERING = "RECOVERING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
 
 
 class InstanceStatus(str, Enum):
     """Status of a GPU instance."""
 
-    CREATING = "creating"
-    STARTING = "starting"
-    RUNNING = "running"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    TERMINATED = "terminated"
-    ERROR = "error"
+    CREATING = "CREATING"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    TERMINATED = "TERMINATED"
+    ERROR = "ERROR"
 
 
 class CheckpointStrategy(str, Enum):
