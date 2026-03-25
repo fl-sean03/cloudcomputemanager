@@ -60,8 +60,11 @@ _ccm_sigterm_handler() {{
 trap _ccm_sigterm_handler SIGTERM
 
 # Run job in background so trap can fire during wait
+# Use a subshell to handle multiline commands correctly
 set +e
-{command} &
+(
+{command}
+) &
 JOB_PID=$!
 wait $JOB_PID
 JOB_EXIT_CODE=$?

@@ -930,7 +930,9 @@ class TestWrapperScriptResilience:
         """Job must run as background process (&) so trap can fire during wait."""
         from cloudcomputemanager.core.wrapper import build_wrapper_script
         script = build_wrapper_script("mpirun lmp -in input.inp")
-        assert "mpirun lmp -in input.inp &" in script
+        # Command runs in a subshell () & to handle multiline commands
+        assert "mpirun lmp -in input.inp" in script
+        assert ") &" in script
         assert "wait $JOB_PID" in script
 
     def test_wrapper_writes_exit_code_143_on_preemption(self):
