@@ -281,13 +281,44 @@ async def submit_job(
 
     # Save Instance record to database
     from cloudcomputemanager.core.instances import upsert_instance
-    await upsert_instance(instance)
+    await upsert_instance(instance, job_id=early_job_id)
+
+    # Create Job record IMMEDIATELY so it's tracked even if later steps fail.
+    # Status starts as PROVISIONING — will be updated to RUNNING after setup completes.
+    import json
+    effective_command = command
+    if stages:
+        effective_command = stages[0].get("command", command)
+
+    job = Job(
+        job_id=early_job_id,
+        name=job_name,
+        project=config.get("project"),
+        status=JobStatus.PROVISIONING,
+        image=image,
+        command=effective_command,
+        setup_commands=setup_commands,
+        provisioning_timeout=provisioning_timeout,
+        stages_json=json.dumps(stages),
+        current_stage=0,
+        progress_json=json.dumps(progress_config),
+        notifications_json=json.dumps(notifications),
+        resources_json=json.dumps(resources),
+        checkpoint_json=json.dumps(checkpoint_config),
+        sync_json=json.dumps(sync_config),
+        budget_json=json.dumps(budget),
+        instance_id=instance.instance_id,
+        started_at=datetime.utcnow(),
+    )
+    async with get_session() as session:
+        session.add(job)
 
     if not quiet:
         console.print(f"\n[green]Instance created:[/green] {instance.instance_id}")
+        console.print(f"  Job ID: {early_job_id}")
         console.print(f"  SSH: ssh -p {instance.ssh_port} {instance.ssh_user}@{instance.ssh_host}")
     else:
-        logger.info("Instance created", instance_id=instance.instance_id)
+        logger.info("Instance created", instance_id=instance.instance_id, job_id=early_job_id)
 
     # Wait for instance to be ready (using configurable provisioning timeout)
     if not quiet:
@@ -304,6 +335,17 @@ async def submit_job(
             console.print("[yellow]Destroying instance to prevent charges...[/yellow]")
         else:
             logger.error(error_msg)
+        # Mark job as FAILED
+        async with get_session() as session:
+            from sqlmodel import select as sel
+            stmt = sel(Job).where(Job.job_id == early_job_id)
+            result = await session.execute(stmt)
+            db_job = result.scalar_one_or_none()
+            if db_job:
+                db_job.status = JobStatus.FAILED
+                db_job.error_message = error_msg
+                db_job.completed_at = datetime.utcnow()
+                session.add(db_job)
         try:
             await provider.terminate_instance(instance.instance_id)
             if not quiet:
@@ -470,45 +512,22 @@ async def submit_job(
         else:
             logger.info("Environment setup complete")
 
-    # Create job record
-    import json
-
-    # For multi-stage jobs, the first stage command is used if stages are defined
-    effective_command = command
-    if stages:
-        effective_command = stages[0].get("command", command)
-
-    job = Job(
-        job_id=early_job_id,
-        name=job_name,
-        project=config.get("project"),
-        status=JobStatus.RUNNING,
-        image=image,
-        command=effective_command,
-        setup_commands=setup_commands,
-        provisioning_timeout=provisioning_timeout,
-        stages_json=json.dumps(stages),
-        current_stage=0,
-        progress_json=json.dumps(progress_config),
-        notifications_json=json.dumps(notifications),
-        resources_json=json.dumps(resources),
-        checkpoint_json=json.dumps(checkpoint_config),
-        sync_json=json.dumps(sync_config),
-        budget_json=json.dumps(budget),
-        instance_id=instance.instance_id,
-        started_at=datetime.utcnow(),
-    )
-
-    # Save to database
+    # Update job status from PROVISIONING to RUNNING now that setup is complete
+    from sqlmodel import select as sel
     async with get_session() as session:
-        session.add(job)
+        stmt = sel(Job).where(Job.job_id == early_job_id)
+        result = await session.execute(stmt)
+        db_job = result.scalar_one_or_none()
+        if db_job:
+            db_job.status = JobStatus.RUNNING
+            session.add(db_job)
 
     if not quiet:
-        console.print(f"\n[bold green]Job submitted successfully![/bold green]")
-        console.print(f"  Job ID: {job.job_id}")
+        console.print(f"\n[bold green]Job ready to start![/bold green]")
+        console.print(f"  Job ID: {early_job_id}")
         console.print(f"  Instance: {instance.instance_id}")
     else:
-        logger.info("Job submitted", job_id=job.job_id, instance_id=instance.instance_id)
+        logger.info("Job ready", job_id=early_job_id, instance_id=instance.instance_id)
 
     # Start the job
     if effective_command:
