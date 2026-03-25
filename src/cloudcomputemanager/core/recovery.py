@@ -1,9 +1,11 @@
 """Preemption recovery for CCM jobs."""
 
 import asyncio
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass
+from pathlib import Path
 import structlog
 
 from sqlmodel import select
@@ -14,6 +16,49 @@ from cloudcomputemanager.core.models import Job, JobStatus, Checkpoint
 from cloudcomputemanager.providers.vast import VastProvider
 
 logger = structlog.get_logger()
+
+
+# =============================================================================
+# Offer Blacklist — remembers bad instances to avoid on retry
+# =============================================================================
+
+_BLACKLIST_FILE = Path.home() / ".cloudcomputemanager" / "offer_blacklist.json"
+_BLACKLIST_EXPIRY_HOURS = 24
+
+
+def _load_blacklist() -> dict:
+    """Load offer blacklist from disk. Returns {offer_id: {reason, expires, project}}."""
+    if not _BLACKLIST_FILE.exists():
+        return {}
+    try:
+        data = json.loads(_BLACKLIST_FILE.read_text())
+        # Prune expired entries
+        now = datetime.utcnow().isoformat()
+        pruned = {k: v for k, v in data.items() if v.get("expires", "") > now}
+        if len(pruned) < len(data):
+            _BLACKLIST_FILE.write_text(json.dumps(pruned, indent=2))
+        return pruned
+    except Exception:
+        return {}
+
+
+def blacklist_offer(offer_id: str, reason: str, project: str = "") -> None:
+    """Add an offer to the blacklist."""
+    bl = _load_blacklist()
+    bl[str(offer_id)] = {
+        "reason": reason,
+        "project": project,
+        "added": datetime.utcnow().isoformat(),
+        "expires": (datetime.utcnow() + timedelta(hours=_BLACKLIST_EXPIRY_HOURS)).isoformat(),
+    }
+    _BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _BLACKLIST_FILE.write_text(json.dumps(bl, indent=2))
+    logger.info("Offer blacklisted", offer_id=offer_id, reason=reason)
+
+
+def get_blacklisted_offers() -> set[str]:
+    """Get set of currently blacklisted offer IDs."""
+    return set(_load_blacklist().keys())
 
 
 @dataclass
@@ -88,12 +133,16 @@ class RecoveryManager:
             gpu_memory_min=gpu_memory_min,
         )
 
+        # Exclude blacklisted offers (bad instances from prior failures)
+        excluded = get_blacklisted_offers()
+
         offers = await self.provider.search_offers(
             gpu_type=gpu_type,
             gpu_count=gpu_count,
             gpu_memory_min=gpu_memory_min,
             disk_gb_min=disk_gb,
             max_hourly_rate=max_hourly_rate,
+            exclude_offer_ids=excluded if excluded else None,
         )
 
         if not offers:

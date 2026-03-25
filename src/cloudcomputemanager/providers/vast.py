@@ -97,6 +97,7 @@ class VastProvider(CloudProvider):
         max_hourly_rate: Optional[float] = None,
         interruptible: bool = True,
         cpu_cores_min: Optional[int] = None,
+        exclude_offer_ids: Optional[set[str]] = None,
     ) -> list[ProviderOffer]:
         """Search for available GPU offers on Vast.ai.
 
@@ -108,6 +109,7 @@ class VastProvider(CloudProvider):
             max_hourly_rate: Maximum hourly rate. If None, no price limit.
             interruptible: Whether to search for interruptible (spot) instances.
             cpu_cores_min: Minimum number of CPU cores. If None, no CPU filter.
+            exclude_offer_ids: Set of offer IDs to skip (e.g., blacklisted machines).
 
         Returns:
             List of ProviderOffer objects sorted by score.
@@ -177,6 +179,14 @@ class VastProvider(CloudProvider):
                 )
             except (KeyError, TypeError) as e:
                 logger.warning("Failed to parse offer", error=str(e), offer=r)
+
+        # Filter out blacklisted offer IDs
+        if exclude_offer_ids:
+            before = len(offers)
+            offers = [o for o in offers if o.offer_id not in exclude_offer_ids]
+            if before > len(offers):
+                logger.info("Excluded blacklisted offers",
+                           excluded=before - len(offers), remaining=len(offers))
 
         # Sort by score
         offers.sort(key=lambda o: o.score)

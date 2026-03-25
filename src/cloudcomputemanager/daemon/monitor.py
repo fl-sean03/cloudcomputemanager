@@ -403,6 +403,17 @@ class JobMonitor:
         """Handle an instance preemption or failure."""
         logger.warning("Instance preempted/failed", job_id=job.job_id, reason=reason)
 
+        # Blacklist the offer that produced this failure (for recoverable exits)
+        if reason.startswith("recoverable_exit_"):
+            try:
+                from cloudcomputemanager.core.recovery import blacklist_offer
+                # Look up the offer_id from the instance
+                instance = await self.provider.get_instance(job.instance_id)
+                if instance and hasattr(instance, 'offer_id') and instance.offer_id:
+                    blacklist_offer(instance.offer_id, reason, job.project or "")
+            except Exception as e:
+                logger.debug("Could not blacklist offer", error=str(e))
+
         self._emit_event(MonitorEvent(
             event_type=EventType.JOB_PREEMPTED,
             job_id=job.job_id,
