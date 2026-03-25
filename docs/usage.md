@@ -71,6 +71,102 @@ ccm config show
 7. **Completion** — Sync results, fire notification hooks, terminate instance
 8. **Preemption** — Wrapper traps SIGTERM → writes `.ccm_preempted` + exit 143 → daemon auto-recovers
 
+## Agent Rules
+
+If you are an AI agent using CCM, follow these rules:
+
+1. **NEVER call `vastai` CLI directly.** Always use `ccm jobs submit` to create jobs and `ccm jobs cancel` to end them. Going around CCM creates ghost instances that cost money and are invisible to monitoring.
+2. **ALWAYS set `project:`** in every job YAML — unique per campaign/project (e.g., `project: amaxine-2026`).
+3. **ALWAYS include a `progress:` block** if you want the dashboard to show progress, rate, and ETA. Without it, those columns will be empty.
+4. **For SSH/commands on a running instance**, use `ccm exec <job_id> "command"` or `ccm ssh <job_id>`.
+5. **To check status**: `ccm jobs list --project your-project`
+6. **If CCM lacks a capability you need**, ask the user rather than going around CCM.
+
+### Required vs Optional Fields
+
+| Field | Required? | What Happens If Missing |
+|-------|-----------|------------------------|
+| `name` | **Yes** | Job submission fails |
+| `image` | **Yes** | Job submission fails |
+| `command` | **Yes** | Job submission fails |
+| `project` | Strongly recommended | Jobs can't be filtered by project; all agents see each other's jobs |
+| `resources.gpu_type` | Recommended | Any available GPU (may get something expensive) |
+| `budget.max_hourly_rate` | Recommended | No price cap; could get expensive instances |
+| `progress` | Recommended | Dashboard shows no progress, rate, or ETA |
+| `setup` | Optional | No pre-job software installation |
+| `stages` | Optional | Job runs as single stage |
+| `upload` | Optional | No files uploaded to instance |
+| `sync` | Optional | No continuous result sync (final sync still happens) |
+| `checkpoint` | Optional | No checkpoint detection for recovery |
+| `notifications` | Optional | No alerts on completion/failure |
+
+### Progress Regex Examples by Workload
+
+The `progress:` block tells the daemon how to extract a progress number from your job's output. Adapt the regex to your specific workload:
+
+```yaml
+# LAMMPS (molecular dynamics)
+progress:
+  type: regex_parse
+  file: /workspace/output/npt.log
+  regex: '^\s*(\d+)\s+'
+  total: 5000000
+
+# PyTorch / ML training
+progress:
+  type: regex_parse
+  file: /workspace/train.log
+  regex: 'Epoch (\d+)'
+  total: 100
+
+# OpenMM (molecular dynamics)
+progress:
+  type: regex_parse
+  file: /workspace/output.csv
+  regex: '(\d+),'
+  total: 50000000
+
+# GROMACS
+progress:
+  type: regex_parse
+  file: /workspace/md.log
+  regex: 'Step\s+(\d+)'
+  total: 10000000
+
+# Generic percentage output
+progress:
+  type: regex_parse
+  file: /workspace/job.log
+  regex: '(\d+)%'
+  total: 100
+
+# Custom command (count output files, lines, etc.)
+progress:
+  type: custom_command
+  command: "ls /workspace/output/*.dat 2>/dev/null | wc -l"
+  total: 500
+
+# File growth (no regex needed — tracks output directory size)
+progress:
+  type: file_growth
+# Requires resources.expected_output_size_mb to compute percentage
+```
+
+### What Shows on the Dashboard
+
+| Column | Source | Always Available? |
+|--------|--------|-------------------|
+| Status | Job status (RUNNING, RECOVERING, etc.) | Yes |
+| Project | `project:` in YAML | Yes, if you set it |
+| Name | `name:` in YAML | Yes |
+| GPU | Auto-detected from Vast.ai instance | Yes (~30s after creation) |
+| $/hr | Auto-detected from Vast.ai instance | Yes (~30s after creation) |
+| Cost | Computed live: elapsed hours × $/hr | Yes |
+| Runtime | Computed live: now - started_at | Yes |
+| Progress | From `progress:` config → daemon parsing | **Only if `progress:` is configured** |
+
+Progress column shows combined info when available: `67% · 145/s · 4.2h left`. For multi-stage jobs without progress config, shows `Stage 1/2`.
+
 ## Job YAML Reference
 
 ```yaml
