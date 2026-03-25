@@ -99,13 +99,19 @@ async def get_dashboard_summary() -> dict:
                 result = await session.execute(stmt)
                 jobs_by_status[status.value] = result.scalar_one_or_none() or 0
 
-            # --- Today's spend ---
+            # --- Today's spend (compute live from elapsed * hourly_rate) ---
             stmt = (
-                select(func.coalesce(func.sum(Job.total_cost_usd), 0.0))
+                select(Job, Instance)
+                .outerjoin(Instance, Job.instance_id == Instance.instance_id)
                 .where(Job.started_at >= today_midnight)
             )
             result = await session.execute(stmt)
-            today_spend = float(result.scalar_one_or_none() or 0.0)
+            for job, instance in result.all():
+                cost = job.total_cost_usd
+                if job.started_at and instance and instance.hourly_rate and cost == 0:
+                    end = job.completed_at or now
+                    cost = ((end - job.started_at).total_seconds() / 3600.0) * instance.hourly_rate
+                today_spend += cost
 
             # --- Burn rate (sum hourly_rate for running jobs' instances) ---
             stmt = (
@@ -119,13 +125,19 @@ async def get_dashboard_summary() -> dict:
             result = await session.execute(stmt)
             burn_rate = float(result.scalar_one_or_none() or 0.0)
 
-            # --- Week spend ---
+            # --- Week spend (compute live from elapsed * hourly_rate) ---
             stmt = (
-                select(func.coalesce(func.sum(Job.total_cost_usd), 0.0))
+                select(Job, Instance)
+                .outerjoin(Instance, Job.instance_id == Instance.instance_id)
                 .where(Job.created_at >= week_ago)
             )
             result = await session.execute(stmt)
-            week_spend = float(result.scalar_one_or_none() or 0.0)
+            for job, instance in result.all():
+                cost = job.total_cost_usd
+                if job.started_at and instance and instance.hourly_rate and cost == 0:
+                    end = job.completed_at or now
+                    cost = ((end - job.started_at).total_seconds() / 3600.0) * instance.hourly_rate
+                week_spend += cost
 
             # --- Recovery stats (jobs with attempt_number > 0 in last 24h) ---
             stmt = (
@@ -333,7 +345,8 @@ async def get_cost_breakdown(days: int = 7) -> dict:
             "total_hours": float,
         }
     """
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=days)
     by_project: list[dict] = []
     by_gpu: list[dict] = []
     total_cost: float = 0.0
@@ -341,81 +354,75 @@ async def get_cost_breakdown(days: int = 7) -> dict:
 
     try:
         async with get_session() as session:
-            # --- Per project ---
+            # --- Per project (compute live costs for running jobs) ---
             stmt = (
-                select(
-                    Job.project,
-                    func.count().label("job_count"),
-                    func.coalesce(func.sum(Job.total_cost_usd), 0.0).label("total_cost"),
-                    func.coalesce(func.sum(Job.total_runtime_seconds), 0).label("total_seconds"),
-                )
+                select(Job, Instance)
+                .outerjoin(Instance, Job.instance_id == Instance.instance_id)
                 .where(Job.created_at >= cutoff)
-                .group_by(Job.project)
             )
             rows = await session.execute(stmt)
-            for project, job_count, cost, seconds in rows.all():
-                by_project.append(
-                    {
-                        "project": project or "(none)",
-                        "job_count": int(job_count),
-                        "total_cost": round(float(cost), 4),
-                        "total_hours": round(int(seconds) / 3600.0, 2),
-                    }
-                )
 
-            # --- Per GPU type via CostRecord first ---
-            stmt_cr = (
-                select(
-                    CostRecord.gpu_type,
-                    func.coalesce(func.sum(CostRecord.total_cost_usd), 0.0).label("total_cost"),
-                    func.coalesce(func.sum(CostRecord.total_runtime_seconds), 0).label("total_seconds"),
-                )
-                .where(CostRecord.created_at >= cutoff)
-                .group_by(CostRecord.gpu_type)
+            project_data: dict[str, dict] = {}
+            for job, instance in rows.all():
+                proj = job.project or "(none)"
+                if proj not in project_data:
+                    project_data[proj] = {"job_count": 0, "total_cost": 0.0, "total_hours": 0.0}
+                project_data[proj]["job_count"] += 1
+
+                # Compute live cost: stored cost OR elapsed * hourly_rate
+                cost = job.total_cost_usd
+                elapsed_hours = 0.0
+                if job.started_at:
+                    end = job.completed_at or now
+                    elapsed_hours = (end - job.started_at).total_seconds() / 3600.0
+                    if instance and instance.hourly_rate and cost == 0:
+                        cost = elapsed_hours * instance.hourly_rate
+
+                project_data[proj]["total_cost"] += cost
+                project_data[proj]["total_hours"] += elapsed_hours
+
+            for proj, data in project_data.items():
+                by_project.append({
+                    "project": proj,
+                    "job_count": data["job_count"],
+                    "total_cost": round(data["total_cost"], 4),
+                    "total_hours": round(data["total_hours"], 2),
+                })
+
+            # --- Per GPU type (compute live costs) ---
+            gpu_data: dict[str, dict] = {}
+            stmt_gpu = (
+                select(Job, Instance)
+                .join(Instance, Job.instance_id == Instance.instance_id)
+                .where(Job.created_at >= cutoff)
             )
-            rows_cr = await session.execute(stmt_cr)
-            cr_results = rows_cr.all()
+            rows_gpu = await session.execute(stmt_gpu)
+            for job, instance in rows_gpu.all():
+                gt = instance.gpu_type or "Unknown"
+                if gt not in gpu_data:
+                    gpu_data[gt] = {"total_cost": 0.0, "total_hours": 0.0}
 
-            if cr_results:
-                for gpu_type, cost, seconds in cr_results:
-                    by_gpu.append(
-                        {
-                            "gpu_type": gpu_type,
-                            "total_cost": round(float(cost), 4),
-                            "total_hours": round(int(seconds) / 3600.0, 2),
-                        }
-                    )
-            else:
-                # Fallback: join jobs -> instances
-                stmt_ji = (
-                    select(
-                        Instance.gpu_type,
-                        func.coalesce(func.sum(Job.total_cost_usd), 0.0).label("total_cost"),
-                        func.coalesce(func.sum(Job.total_runtime_seconds), 0).label("total_seconds"),
-                    )
-                    .join(Instance, Job.instance_id == Instance.instance_id)
-                    .where(Job.created_at >= cutoff)
-                    .group_by(Instance.gpu_type)
-                )
-                rows_ji = await session.execute(stmt_ji)
-                for gpu_type, cost, seconds in rows_ji.all():
-                    by_gpu.append(
-                        {
-                            "gpu_type": gpu_type,
-                            "total_cost": round(float(cost), 4),
-                            "total_hours": round(int(seconds) / 3600.0, 2),
-                        }
-                    )
+                cost = job.total_cost_usd
+                elapsed_hours = 0.0
+                if job.started_at:
+                    end = job.completed_at or now
+                    elapsed_hours = (end - job.started_at).total_seconds() / 3600.0
+                    if instance.hourly_rate and cost == 0:
+                        cost = elapsed_hours * instance.hourly_rate
 
-            # --- Totals ---
-            stmt_total = select(
-                func.coalesce(func.sum(Job.total_cost_usd), 0.0).label("tc"),
-                func.coalesce(func.sum(Job.total_runtime_seconds), 0).label("ts"),
-            ).where(Job.created_at >= cutoff)
-            row = await session.execute(stmt_total)
-            tc, ts = row.one()
-            total_cost = round(float(tc), 4)
-            total_hours = round(int(ts) / 3600.0, 2)
+                gpu_data[gt]["total_cost"] += cost
+                gpu_data[gt]["total_hours"] += elapsed_hours
+
+            for gt, data in gpu_data.items():
+                by_gpu.append({
+                    "gpu_type": gt,
+                    "total_cost": round(data["total_cost"], 4),
+                    "total_hours": round(data["total_hours"], 2),
+                })
+
+            # --- Totals (sum from live-computed project data) ---
+            total_cost = round(sum(p["total_cost"] for p in by_project), 4)
+            total_hours = round(sum(p["total_hours"] for p in by_project), 2)
 
     except Exception:
         pass  # graceful fallback
