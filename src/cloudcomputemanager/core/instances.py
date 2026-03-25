@@ -142,15 +142,15 @@ async def sync_all_instances(provider) -> dict:
     then upserts each into the Instance table. Also matches unassociated
     instances to Job records by instance_id.
 
-    Returns summary: {"synced": int, "new": int, "updated": int, "terminated": int}
+    Returns summary: {"synced": int, "new": int, "updated": int, "terminated": int, "unmanaged": int}
     """
     try:
         all_instances = await provider.list_instances()
     except Exception as e:
         logger.warning("Failed to list instances from provider", error=str(e))
-        return {"synced": 0, "new": 0, "updated": 0, "terminated": 0}
+        return {"synced": 0, "new": 0, "updated": 0, "terminated": 0, "unmanaged": 0}
 
-    stats = {"synced": len(all_instances), "new": 0, "updated": 0, "terminated": 0}
+    stats = {"synced": len(all_instances), "new": 0, "updated": 0, "terminated": 0, "unmanaged": 0}
 
     for pi in all_instances:
         # Check if this instance is already in DB
@@ -172,6 +172,18 @@ async def sync_all_instances(provider) -> dict:
                 row = result.first()
                 if row:
                     job_id = row[0]
+
+        # Detect unlabeled/unmanaged running instances
+        is_running = pi.status in (ProviderStatus.RUNNING, ProviderStatus.STARTING)
+        if is_running and not label_data and not job_id:
+            stats["unmanaged"] += 1
+            logger.warning(
+                "UNMANAGED INSTANCE DETECTED: running instance with no CCM label or job. "
+                "An agent may have called vastai directly instead of using CCM.",
+                instance_id=pi.instance_id,
+                gpu_type=pi.gpu_type,
+                hourly_rate=pi.hourly_rate,
+            )
 
         await upsert_instance(pi, job_id=job_id)
 
@@ -208,7 +220,46 @@ async def sync_all_instances(provider) -> dict:
             logger.info("Instance no longer on provider, marked terminated",
                         instance_id=db_inst.instance_id)
 
-    if stats["new"] > 0 or stats["terminated"] > 0:
+    # Auto-terminate unmanaged instances that have been running without a label
+    # and have no job association. This prevents rogue agents from burning money.
+    if stats["unmanaged"] > 0:
+        for pi in all_instances:
+            is_running = pi.status in (ProviderStatus.RUNNING, ProviderStatus.STARTING)
+            has_label = parse_instance_label(getattr(pi, 'label', None)) is not None
+
+            if is_running and not has_label:
+                # Check if this instance has a job_id in DB
+                has_job = False
+                async with get_session() as session:
+                    stmt = select(Instance.job_id).where(Instance.instance_id == pi.instance_id)
+                    result = await session.execute(stmt)
+                    row = result.first()
+                    if row and row[0]:
+                        has_job = True
+
+                if not has_job:
+                    logger.warning(
+                        "Auto-terminating unmanaged instance (no label, no job)",
+                        instance_id=pi.instance_id,
+                        gpu_type=pi.gpu_type,
+                        hourly_rate=pi.hourly_rate,
+                    )
+                    try:
+                        await provider.terminate_instance(pi.instance_id)
+                        # Update DB
+                        async with get_session() as session:
+                            stmt = select(Instance).where(Instance.instance_id == pi.instance_id)
+                            result = await session.execute(stmt)
+                            inst = result.scalar_one_or_none()
+                            if inst:
+                                inst.status = InstanceStatus.TERMINATED
+                                inst.terminated_at = datetime.utcnow()
+                                session.add(inst)
+                    except Exception as e:
+                        logger.error("Failed to auto-terminate unmanaged instance",
+                                     instance_id=pi.instance_id, error=str(e))
+
+    if stats["new"] > 0 or stats["terminated"] > 0 or stats["unmanaged"] > 0:
         logger.info("Instance sync complete", **stats)
 
     return stats
