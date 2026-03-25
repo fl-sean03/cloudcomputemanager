@@ -206,8 +206,7 @@ class TestGetSetupCommands:
         cmds = get_setup_commands(env)
         assert "miniconda" in cmds.lower()
         assert "conda env create" in cmds
-        assert "-c conda-forge" in cmds
-        assert "-c bioconda" in cmds
+        assert ".ccm_env.yml" in cmds
 
     def test_packages_conda_setup(self):
         env = EnvironmentConfig(
