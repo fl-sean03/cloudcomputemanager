@@ -35,7 +35,7 @@
             <td>{{ job.exit_code if job.exit_code is not none else "--" }}</td>
             <td>{{ job.gpu_type or "--" }}</td>
             <td>{{ "$%.2f"|format(job.hourly_rate) if job.hourly_rate else "--" }}</td>
-            <td>${{ "%.2f"|format(job.total_cost_usd) }}</td>
+            <td>${{ "%.2f"|format(job.cost_so_far) }}</td>
             <td>{{ job.runtime_display }}</td>
             <td>
                 {% if job.output_location %}
