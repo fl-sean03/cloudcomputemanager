@@ -178,10 +178,10 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
         # Channels come from the YAML file itself, not command line args.
         return "\n".join([
             "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
-            "bash /tmp/miniconda.sh -b -p /opt/conda > /dev/null 2>&1",
+            "bash /tmp/miniconda.sh -b -p /opt/conda",
             "export PATH=/opt/conda/bin:$PATH",
-            "/opt/conda/bin/conda env create -f /workspace/.ccm_env.yml -q",
-            "source /opt/conda/bin/activate ccm_env",
+            "/opt/conda/bin/conda env create --file /workspace/.ccm_env.yml --name ccm_env --yes",
+            "echo 'Conda environment created successfully'",
         ])
 
     if env.strategy == EnvironmentStrategy.PACKAGES:
