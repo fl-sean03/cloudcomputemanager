@@ -664,7 +664,7 @@ async def list_jobs(
         stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
 
         if status:
-            stmt = stmt.where(Job.status == JobStatus(status))
+            stmt = stmt.where(Job.status == JobStatus(status.upper()))
         if project:
             stmt = stmt.where(Job.project == project)
 

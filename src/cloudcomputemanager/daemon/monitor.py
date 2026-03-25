@@ -336,12 +336,29 @@ class JobMonitor:
         Exit code 143 (SIGTERM) indicates preemption — route to recovery instead.
         """
         from cloudcomputemanager.core.wrapper import PREEMPTION_EXIT_CODE
+        import json
 
         # Exit code 143 = SIGTERM = preemption. Route to recovery, not failure.
         if exit_code == PREEMPTION_EXIT_CODE:
             logger.warning("Job preempted (SIGTERM, exit 143)", job_id=job.job_id)
             await self.handle_preemption(job, "sigterm_preemption")
             return
+
+        # Check if this exit code is configured as recoverable
+        # (e.g., SIGSEGV=139 on bad GPU instances, OOM-kill=137)
+        # Fixes: https://github.com/fl-sean03/cloudcomputemanager/issues/8
+        if exit_code != 0:
+            retry_config = json.loads(job.retry_json) if job.retry_json else {}
+            recoverable_codes = retry_config.get("recover_on_exit_codes", [])
+            if exit_code in recoverable_codes:
+                logger.warning(
+                    "Job failed with recoverable exit code, routing to recovery",
+                    job_id=job.job_id,
+                    exit_code=exit_code,
+                    recoverable_codes=recoverable_codes,
+                )
+                await self.handle_preemption(job, f"recoverable_exit_{exit_code}")
+                return
 
         logger.info("Job completed", job_id=job.job_id, exit_code=exit_code)
 
