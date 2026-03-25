@@ -180,8 +180,9 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
             "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
             "bash /tmp/miniconda.sh -b -p /opt/conda",
             "export PATH=/opt/conda/bin:$PATH",
-            # Accept Anaconda ToS non-interactively (required since 2024)
-            "/opt/conda/bin/conda config --set auto_accept_tos true",
+            # Accept Anaconda ToS non-interactively. Try both config keys
+            # (auto_accept_tos for newer conda, tos_accepted for older).
+            "/opt/conda/bin/conda config --set auto_accept_tos true 2>/dev/null || /opt/conda/bin/conda config --set tos_accepted true 2>/dev/null || true",
             "/opt/conda/bin/conda config --set auto_activate_base false",
             "/opt/conda/bin/conda env create --file /workspace/.ccm_env.yml --name ccm_env --yes",
             "echo 'Conda environment created successfully'",
@@ -205,7 +206,7 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
                 "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
                 "bash /tmp/miniconda.sh -b -p /opt/conda > /dev/null 2>&1",
                 "export PATH=/opt/conda/bin:$PATH",
-                "/opt/conda/bin/conda config --set auto_accept_tos true",
+                "/opt/conda/bin/conda config --set auto_accept_tos true 2>/dev/null || /opt/conda/bin/conda config --set tos_accepted true 2>/dev/null || true",
                 f"/opt/conda/bin/conda install --yes {channels} {pkg_str}",
             ])
 
