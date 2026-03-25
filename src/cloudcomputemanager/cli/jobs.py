@@ -414,26 +414,50 @@ async def submit_job(
             console.print("[green]Environment files uploaded.[/green]")
 
     # Run environment setup commands via SSH (after file upload)
+    # Write commands to a script file, then execute it. This is more robust
+    # than sending a long && chain via SSH (which can break on special chars).
     if env_post_upload_setup:
+        import base64
+
+        # Write setup script to instance
+        script_content = "#!/bin/bash\nset -e\n" + env_post_upload_setup
+        b64 = base64.b64encode(script_content.encode()).decode()
+        write_cmd = f"echo {b64} | base64 -d > /workspace/.ccm_env_setup.sh && chmod +x /workspace/.ccm_env_setup.sh"
+
         if not quiet:
             console.print("[bold]Setting up environment...[/bold]")
-            with console.status("Running environment setup..."):
-                # Convert multiline to single command with && chaining
-                setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
-                setup_cmd = " && ".join(setup_lines)
+
+        # Deploy the script
+        exit_code, _, stderr = await provider.execute_command(
+            instance.instance_id, write_cmd, timeout=30,
+        )
+        if exit_code != 0:
+            error_msg = f"Failed to deploy environment setup script: {stderr[:200]}"
+            if not quiet:
+                console.print(f"[red]{error_msg}[/red]")
+            else:
+                logger.error(error_msg)
+            await provider.terminate_instance(instance.instance_id)
+            return
+
+        # Execute the script with long timeout (conda env create can take 15+ min)
+        if not quiet:
+            with console.status("Running environment setup (this may take 10-15 minutes)..."):
                 exit_code, stdout, stderr = await provider.execute_command(
-                    instance.instance_id, setup_cmd, timeout=1200,
+                    instance.instance_id,
+                    "bash /workspace/.ccm_env_setup.sh",
+                    timeout=1200,
                 )
         else:
-            setup_lines = [l.strip() for l in env_post_upload_setup.strip().split("\n") if l.strip()]
-            setup_cmd = " && ".join(setup_lines)
-            logger.info("Running environment setup", command=setup_cmd[:80])
+            logger.info("Running environment setup script")
             exit_code, stdout, stderr = await provider.execute_command(
-                instance.instance_id, setup_cmd, timeout=600,
+                instance.instance_id,
+                "bash /workspace/.ccm_env_setup.sh",
+                timeout=1200,
             )
 
         if exit_code != 0:
-            error_msg = f"Environment setup failed (exit {exit_code}): {stderr[:200]}"
+            error_msg = f"Environment setup failed (exit {exit_code}): {stderr[:300]}"
             if not quiet:
                 console.print(f"[red]{error_msg}[/red]")
             else:
