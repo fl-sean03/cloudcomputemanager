@@ -5,15 +5,11 @@
             <th>Status</th>
             <th>Project</th>
             <th>Name</th>
-            <th>Stage</th>
-            <th>Progress</th>
-            <th>Rate</th>
-            <th>ETA</th>
             <th>GPU</th>
             <th>$/hr</th>
             <th>Cost</th>
             <th>Runtime</th>
-            <th>Sync</th>
+            <th>Progress</th>
             <th>Actions</th>
         </tr>
     </thead>
@@ -42,34 +38,24 @@
                     {{ job.name }}
                 </a>
             </td>
-            <td>{% if job.total_stages > 0 %}{{ job.current_stage + 1 }}/{{ job.total_stages }}{% else %}--{% endif %}</td>
+            <td>{{ job.gpu_type or "--" }}{% if job.gpu_count and job.gpu_count > 1 %} x{{ job.gpu_count }}{% endif %}</td>
+            <td>{{ "$%.3f"|format(job.hourly_rate) if job.hourly_rate else "--" }}</td>
+            <td>${{ "%.2f"|format(job.cost_so_far) }}</td>
+            <td>{{ job.runtime_display }}</td>
             <td>
+                {# Show progress bar if available, stage info if multi-stage, or nothing #}
                 {% if job.progress_percent is not none %}
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: {{ job.progress_percent }}%"></div>
                 </div>
-                <small>{{ "%.0f"|format(job.progress_percent) }}%</small>
+                <small>{{ "%.0f"|format(job.progress_percent) }}%
+                    {%- if job.steps_per_second %} · {{ "%.0f"|format(job.steps_per_second) }}/s{% endif %}
+                    {%- if job.estimated_hours_remaining %} · {{ "%.1f"|format(job.estimated_hours_remaining) }}h left{% endif %}
+                </small>
+                {% elif job.total_stages > 0 %}
+                <small>Stage {{ job.current_stage + 1 }}/{{ job.total_stages }}</small>
                 {% else %}
-                <small>--</small>
-                {% endif %}
-            </td>
-            <td>{{ "%.1fk/s"|format(job.steps_per_second / 1000) if job.steps_per_second else "--" }}</td>
-            <td>{{ "%.1fh"|format(job.estimated_hours_remaining) if job.estimated_hours_remaining else "--" }}</td>
-            <td>{{ job.gpu_type or "--" }}</td>
-            <td>{{ "$%.2f"|format(job.hourly_rate) if job.hourly_rate else "--" }}</td>
-            <td>${{ "%.2f"|format(job.cost_so_far) }}</td>
-            <td>{{ job.runtime_display }}</td>
-            <td>
-                {% if job.sync_status == 'synced' %}
-                <span class="badge badge-green">synced</span>
-                {% elif job.sync_status == 'syncing' %}
-                <span class="badge badge-blue">syncing</span>
-                {% elif job.sync_status == 'failed' %}
-                <span class="badge badge-red">failed</span>
-                {% elif job.sync_status == 'sync_failed' %}
-                <span class="badge badge-red">failed</span>
-                {% else %}
-                <span class="badge badge-gray">pending</span>
+                <small style="opacity:0.4">--</small>
                 {% endif %}
             </td>
             <td class="actions-cell">
@@ -78,18 +64,15 @@
                         hx-confirm="Cancel job '{{ job.name }}'? This cannot be undone."
                         hx-swap="none">Cancel</button>
                 <button class="btn-sm"
-                        hx-post="/dashboard/actions/sync/{{ job.job_id }}"
-                        hx-swap="none">Sync</button>
-                <button class="btn-sm"
                         onclick="navigator.clipboard.writeText('ssh -p {{ job.ssh_port }} root@{{ job.ssh_host }}')">SSH</button>
                 <button class="btn-sm"
-                        hx-get="/dashboard/partials/logs/{{ job.job_id }}"
+                        hx-get="/dashboard/actions/logs/{{ job.job_id }}"
                         hx-target="#detail-{{ job.job_id }}"
                         hx-swap="innerHTML">Logs</button>
             </td>
         </tr>
         <tr>
-            <td colspan="13" id="detail-{{ job.job_id }}"></td>
+            <td colspan="9" id="detail-{{ job.job_id }}"></td>
         </tr>
         {% endfor %}
     </tbody>

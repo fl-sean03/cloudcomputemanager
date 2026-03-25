@@ -449,7 +449,7 @@ class JobMonitor:
                 )
                 if exit_code == 0 and stdout.strip():
                     # Find all matches, use the last one (most recent)
-                    matches = re.findall(pattern, stdout)
+                    matches = re.findall(pattern, stdout, re.MULTILINE)
                     if matches:
                         try:
                             current_value = float(matches[-1])
