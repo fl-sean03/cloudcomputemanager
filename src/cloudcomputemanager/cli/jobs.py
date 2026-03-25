@@ -463,7 +463,10 @@ async def submit_job(
         import base64
 
         # Write setup script to instance
-        script_content = "#!/bin/bash\nset -e\n" + env_post_upload_setup
+        # Don't use set -e: conda config commands may fail on some versions
+        # and we handle the overall exit code at the CCM level.
+        # The last command (conda env create or echo success) determines the exit code.
+        script_content = "#!/bin/bash\n" + env_post_upload_setup
         b64 = base64.b64encode(script_content.encode()).decode()
         write_cmd = f"echo {b64} | base64 -d > /workspace/.ccm_env_setup.sh && chmod +x /workspace/.ccm_env_setup.sh"
 
