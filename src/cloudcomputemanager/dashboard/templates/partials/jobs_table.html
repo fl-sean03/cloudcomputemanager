@@ -19,17 +19,17 @@
             <td>
                 {% set s = job.status|upper %}
                 {% if s == 'RUNNING' %}
-                <span class="status-running" title="Running">&#x25CF;</span>
+                <span class="status-running" title="Running">&#x25CF; Running</span>
                 {% elif s == 'PROVISIONING' %}
-                <span class="status-provisioning" title="Provisioning">&#x25D0;</span>
+                <span class="status-provisioning" title="Instance is starting up">&#x25D0; Starting</span>
                 {% elif s == 'RECOVERING' %}
-                <span class="status-recovering" title="Recovering">&#x25B2;</span>
+                <span class="status-recovering" title="Recovering from preemption">&#x25B2; Recovering</span>
                 {% elif s == 'CHECKPOINTING' %}
-                <span class="status-provisioning" title="Checkpointing">&#x25D0;</span>
+                <span class="status-provisioning" title="Creating checkpoint">&#x25D0; Checkpoint</span>
                 {% elif s == 'PENDING' %}
-                <span class="status-provisioning" title="Pending">&#x25CB;</span>
+                <span class="status-provisioning" title="Waiting for resources">&#x25CB; Pending</span>
                 {% else %}
-                <span title="{{ job.status }}">&#x25CB;</span>
+                <span title="{{ job.status }}">&#x25CB; {{ s }}</span>
                 {% endif %}
             </td>
             <td>{{ job.project }}</td>
