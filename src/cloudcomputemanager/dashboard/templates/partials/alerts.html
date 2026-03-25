@@ -1,15 +1,27 @@
 {% if alerts %}
 <div class="alerts-container">
-    {% for alert in alerts %}
+    {% for alert in alerts[:5] %}
     <div class="alert alert-{{ alert.severity }}">
         <span class="alert-icon">
             {% if alert.severity == 'red' %}&#x26D4;{% elif alert.severity == 'yellow' %}&#x26A0;{% else %}&#x2139;{% endif %}
         </span>
         <span class="alert-message">{{ alert.message }}</span>
-        {% if alert.action %}
-        <span class="alert-action">{{ alert.action }}</span>
-        {% endif %}
     </div>
     {% endfor %}
+    {% if alerts|length > 5 %}
+    <details style="margin-top:0.25rem">
+        <summary style="font-size:0.85rem; cursor:pointer; opacity:0.7">
+            + {{ alerts|length - 5 }} more alert{{ 's' if alerts|length - 5 != 1 else '' }}
+        </summary>
+        {% for alert in alerts[5:] %}
+        <div class="alert alert-{{ alert.severity }}">
+            <span class="alert-icon">
+                {% if alert.severity == 'red' %}&#x26D4;{% elif alert.severity == 'yellow' %}&#x26A0;{% else %}&#x2139;{% endif %}
+            </span>
+            <span class="alert-message">{{ alert.message }}</span>
+        </div>
+        {% endfor %}
+    </details>
+    {% endif %}
 </div>
 {% endif %}
