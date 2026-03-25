@@ -12,39 +12,39 @@ CloudComputeManager (CCM) is a GPU cloud management platform for running **any w
 
 ```
 src/cloudcomputemanager/
-├── agents/sdk.py         — Async Python SDK (CloudComputeManagerAgent, JobSpec)
-├── api/                  — FastAPI REST API (/v1/jobs, /v1/instances, etc.)
-├── benchmarks/           — GPU cost-performance benchmark framework
-│   ├── engine.py         — Orchestrate benchmarks across GPU tiers
-│   └── models.py         — BenchmarkSuite, BenchmarkRun, BenchmarkResult
-├── checkpoint/           — Checkpoint detection (LAMMPS, PyTorch, generic patterns)
-│   ├── detectors.py      — Application-specific checkpoint finders
-│   └── orchestrator.py   — Checkpoint lifecycle management
-├── cli/                  — Typer CLI (45+ commands)
-│   ├── main.py           — All command registration and top-level shortcuts
-│   ├── jobs.py           — submit, list, status, wait, reconnect, recover
-│   ├── jobs_exec.py      — exec, upload, ssh by job_id
-│   ├── batch.py          — Batch submit with Cartesian matrix expansion
-│   ├── benchmarks.py     — Benchmark CLI commands
-│   └── metrics.py        — Job performance metrics display
+├── agents/sdk.py          — Async Python SDK (CloudComputeManagerAgent, JobSpec)
+├── api/                   — FastAPI REST API (/v1/jobs, /v1/instances, etc.)
+├── benchmarks/            — GPU cost-performance benchmark framework
+├── checkpoint/            — Checkpoint detection (LAMMPS, PyTorch, generic)
+├── cli/
+│   ├── main.py            — All command registration (50+ commands)
+│   ├── jobs.py            — submit, list, status, wait, reconnect, recover
+│   ├── jobs_exec.py       — exec, upload, ssh by job_id
+│   ├── batch.py           — Batch submit with Cartesian matrix expansion
+│   ├── environments.py    — ccm env export/pack/list
+│   └── benchmarks.py      — Benchmark CLI commands
 ├── core/
-│   ├── models.py         — SQLModel tables: Job, Instance, Checkpoint, CostRecord, SyncRecord
-│   ├── wrapper.py        — SIGTERM-aware wrapper script builder (single source of truth)
-│   ├── templates.py      — YAML template loading, merging, ${VAR} substitution
-│   ├── config.py         — pydantic-settings (all CCM_ env vars)
-│   ├── database.py       — Async SQLite via aiosqlite (auto-commit sessions)
-│   ├── recovery.py       — Preemption recovery: checkpoint → new instance → restore
-│   ├── cleanup.py        — Stale job / orphan instance cleanup
-│   └── validation.py     — Pre-flight performance validation
+│   ├── models.py          — SQLModel: Job, Instance, Checkpoint, CostRecord
+│   ├── instances.py       — Instance labels, sync from Vast.ai API, safe termination
+│   ├── wrapper.py         — SIGTERM-aware wrapper script builder
+│   ├── environment.py     — Environment parsing, setup command generation
+│   ├── templates.py       — YAML loading, merging, ${VAR} substitution
+│   ├── config.py          — pydantic-settings (all CCM_ env vars)
+│   ├── database.py        — Async SQLite via aiosqlite
+│   ├── recovery.py        — Preemption recovery orchestration
+│   └── cleanup.py         — Stale job / orphan instance cleanup
 ├── daemon/
-│   ├── monitor.py        — Main loop: health checks, completion, stage advancement,
-│   │                       progress parsing, notifications, budget, reconciliation
-│   └── service.py        — Daemon lifecycle (start/stop/PID/logs)
+│   ├── monitor.py         — Main loop: health, completion, stages, progress, budget
+│   └── service.py         — Daemon lifecycle (start/stop/PID/logs)
+├── dashboard/             — Web UI (FastAPI + Jinja2 + HTMX + SSE)
+│   ├── routes.py          — Page, partial, SSE, and action endpoints
+│   ├── data.py            — Data aggregation queries
+│   └── templates/         — HTML templates + static assets
 ├── providers/
-│   ├── base.py           — CloudProvider ABC, managed_instance, GPU tier search
-│   └── vast.py           — Vast.ai: SSH retry (3x backoff), rsync, heartbeat, onstart
-├── sync/engine.py        — Rsync-based continuous data synchronization
-└── templates/            — 6 built-in YAML templates (quick-gpu, lammps-gpu, etc.)
+│   ├── base.py            — CloudProvider ABC, GPU tier search
+│   └── vast.py            — Vast.ai: SSH retry, rsync, labels, heartbeat
+├── sync/engine.py         — Rsync-based data synchronization
+└── templates/             — 6 built-in YAML templates
 ```
 
 ## Installation
@@ -268,18 +268,23 @@ ccm benchmark run benchmark.yaml                 # Run suite across GPU tiers
 ccm benchmark run benchmark.yaml --gpu RTX_3060  # Limit to one GPU type
 ccm benchmark results [suite_id]                 # Show results table
 
-# === Infrastructure ===
+# === Dashboard & Infrastructure ===
+ccm dashboard [--port 8765]                      # Web dashboard
+ccm reconnect [job_id]                           # Rehydrate after downtime
 ccm instances search --gpu RTX_4090 --max-price 0.50
 ccm instances list
-ccm instances terminate <instance_id>
-ccm daemon start [--foreground]                  # Start background monitor
+ccm daemon start [--foreground]                  # Background monitor
 ccm daemon stop
 ccm daemon status
 ccm config show
-ccm config init
 ccm templates list
 ccm templates show lammps-gpu
-ccm cleanup [--execute]                          # Clean stale jobs/orphan instances
+ccm cleanup [--execute]                          # Clean stale jobs
+
+# === Environment Management ===
+ccm env export -n myenv -o environment.yml       # Export conda env
+ccm env pack -n myenv -o env.tar.gz              # Create conda-pack
+ccm env list                                     # List local envs
 ```
 
 ## Batch Matrix Expansion
@@ -370,35 +375,24 @@ budget:
 
 ## Multi-Agent / Multi-Project Usage
 
-CCM uses a **single daemon, single database, single Vast.ai API key**. Multiple agents share this infrastructure safely. Isolation is via the `project` field.
-
-**Rules for agents:**
-1. **NEVER call `vastai` CLI directly** for creating or destroying instances. Always use `ccm jobs submit` to create and `ccm jobs cancel` to terminate. Going around CCM creates ghost instances that cost money and are invisible to monitoring.
-2. **Always set a unique `project` name** in every job YAML
-3. **Always filter by your project** when listing/waiting: `ccm jobs list --project my-project`
-4. **The daemon monitors ALL jobs** — don't start your own daemon
-5. **Each job gets its own instance** — no resource conflicts
-6. **For SSH/commands on a running instance**, use `ccm exec <job_id> "command"` or `ccm ssh <job_id>`. These are safe — they don't change infrastructure state.
-7. **If CCM lacks a capability you need**, ask the user rather than going around CCM
+CCM uses a **single daemon, single database, single Vast.ai API key**. Multiple agents share this infrastructure safely. Isolation is via the `project` field. See [Agent Rules](#agent-rules) above for the complete rule set.
 
 ```yaml
-# Agent A (Amaxine project)
-project: amaxine-2026
-
-# Agent B (Pt-catalysis)
-project: pt-catalysis
-
-# Agent C (ML-solvent)
-project: ml-solvent
+# Each agent uses a unique project name:
+project: amaxine-2026      # Agent A
+project: pt-catalysis       # Agent B
+project: ml-solvent         # Agent C
 ```
 
 ```bash
-# Each agent scopes to its own project:
+# Each agent scopes commands to its own project:
 ccm jobs list --project amaxine-2026
 ccm batch wait --project pt-catalysis
 
 # ccm reconnect and ccm daemon check ALL projects — correct behavior
 ```
+
+Every instance created through CCM is labeled on Vast.ai: `ccm|{job_id}|{project}|{name}`. This ensures instances can be matched to jobs even if the local database is wiped. Instances without `ccm|` labels show as "Unmanaged" on the dashboard with a warning.
 
 ## Dashboard
 
@@ -409,14 +403,14 @@ ccm dashboard --no-browser       # Start without opening browser
 ```
 
 The dashboard shows a single-page view at `http://localhost:8765/dashboard` with:
-- **Alert banner** — failed jobs, stalled progress, budget warnings
-- **Summary cards** — active jobs, today's spend, weekly spend, recoveries
-- **Active jobs table** — status, project, progress bars, rate, ETA, cost, sync status, action buttons
-- **Events feed** — completions, failures, preemptions, syncs from the last 24h
-- **Cost breakdown** — per-project and per-GPU-type aggregation
+- **Summary cards** — active jobs, today's spend (live), weekly spend, burn rate, recoveries
+- **Unmanaged instances warning** — instances on Vast.ai not created through CCM (with terminate button)
+- **Active jobs table** — status, project, name, GPU, $/hr, cost (live), runtime, progress, actions (Cancel, SSH, Logs)
+- **Events feed** — completions, failures, preemptions from daemon log (24h)
+- **Cost breakdown** — per-project totals + per-GPU-type breakdown (live computed from elapsed × hourly rate)
 - **Finished jobs** — collapsible section for recently completed jobs
 
-Live updates via Server-Sent Events — no manual refresh needed. Actions (cancel, sync, view logs) available directly from the table. Reads from the same SQLite database as the daemon.
+Live updates via Server-Sent Events — no manual refresh needed. All costs are computed live (elapsed × hourly rate), not stored values. Instance data (GPU type, $/hr, SSH info) is auto-synced from the Vast.ai API.
 
 ## Built-in Templates
 
