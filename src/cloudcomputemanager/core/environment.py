@@ -180,12 +180,12 @@ def get_setup_commands(env: EnvironmentConfig) -> str:
             "curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh",
             "bash /tmp/miniconda.sh -b -p /opt/conda",
             "export PATH=/opt/conda/bin:$PATH",
-            # Accept Anaconda ToS non-interactively. Try both config keys
-            # (auto_accept_tos for newer conda, tos_accepted for older).
+            # Accept Anaconda ToS non-interactively. Try both config keys.
             "/opt/conda/bin/conda config --set auto_accept_tos true 2>/dev/null || /opt/conda/bin/conda config --set tos_accepted true 2>/dev/null || true",
-            "/opt/conda/bin/conda config --set auto_activate_base false",
-            "/opt/conda/bin/conda env create --file /workspace/.ccm_env.yml --name ccm_env --yes",
-            "echo 'Conda environment created successfully'",
+            "/opt/conda/bin/conda config --set auto_activate_base false 2>/dev/null || true",
+            # Create environment and verify it exists
+            "/opt/conda/bin/conda env create --file /workspace/.ccm_env.yml --name ccm_env --yes || { echo 'ERROR: conda env create failed'; exit 1; }",
+            "/opt/conda/bin/conda run -n ccm_env python -c 'print(\"Environment verified\")' || { echo 'ERROR: environment verification failed'; exit 1; }",
         ])
 
     if env.strategy == EnvironmentStrategy.PACKAGES:
@@ -238,7 +238,9 @@ def get_command_prefix(env: EnvironmentConfig) -> str:
         return "source /opt/conda-env/bin/activate && "
 
     if env.strategy == EnvironmentStrategy.CONDA_ENV:
-        return "export PATH=/opt/conda/bin:$PATH && source /opt/conda/bin/activate ccm_env && "
+        # Use semicolons and newlines instead of && to avoid breaking
+        # the wrapper's background job syntax when command is multiline
+        return "export PATH=/opt/conda/bin:$PATH; source /opt/conda/bin/activate ccm_env; "
 
     if env.strategy == EnvironmentStrategy.PACKAGES:
         conda_pkgs = (env.packages or {}).get("conda", [])
