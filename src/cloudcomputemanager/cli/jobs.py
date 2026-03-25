@@ -229,6 +229,7 @@ async def submit_job(
         "disk_gb_min": resources.get("disk_gb", 50),
         "max_hourly_rate": budget.get("max_hourly_rate"),
         "cpu_cores_min": resources.get("cpu_cores"),  # Filter by minimum CPU cores
+        "cuda_version_min": resources.get("cuda_version_min"),  # Filter by CUDA version
     }
 
     if not quiet:

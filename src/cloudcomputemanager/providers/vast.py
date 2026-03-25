@@ -98,6 +98,7 @@ class VastProvider(CloudProvider):
         interruptible: bool = True,
         cpu_cores_min: Optional[int] = None,
         exclude_offer_ids: Optional[set[str]] = None,
+        cuda_version_min: Optional[float] = None,
     ) -> list[ProviderOffer]:
         """Search for available GPU offers on Vast.ai.
 
@@ -141,6 +142,9 @@ class VastProvider(CloudProvider):
         if cpu_cores_min:
             # Filter by minimum CPU cores (effective cores)
             query_parts.append(f"cpu_cores_effective>={cpu_cores_min}")
+
+        if cuda_version_min:
+            query_parts.append(f"cuda_vers>={cuda_version_min}")
 
         query = " ".join(query_parts)
 

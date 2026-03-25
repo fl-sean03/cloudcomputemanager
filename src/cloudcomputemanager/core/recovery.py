@@ -125,6 +125,7 @@ class RecoveryManager:
         gpu_memory_min = resources.get("gpu_memory_min")  # None if not specified
         disk_gb = resources.get("disk_gb", 50)
         max_hourly_rate = budget.get("max_hourly_rate")
+        cuda_version_min = resources.get("cuda_version_min")
 
         logger.info(
             "Searching for recovery instance",
@@ -143,6 +144,7 @@ class RecoveryManager:
             disk_gb_min=disk_gb,
             max_hourly_rate=max_hourly_rate,
             exclude_offer_ids=excluded if excluded else None,
+            cuda_version_min=cuda_version_min,
         )
 
         if not offers:
