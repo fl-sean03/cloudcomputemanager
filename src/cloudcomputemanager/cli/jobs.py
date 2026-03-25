@@ -508,8 +508,9 @@ async def submit_job(
             else:
                 logger.error(error_msg)
         else:
+            # nohup ... & should return immediately; use short timeout
             exit_code, stdout, stderr = await provider.execute_command(
-                instance.instance_id, run_cmd
+                instance.instance_id, run_cmd, timeout=15
             )
 
             if exit_code == 0:
@@ -517,6 +518,26 @@ async def submit_job(
                     console.print("[green]Job started in background[/green]")
                 else:
                     logger.info("Job started in background", job_id=job.job_id)
+            elif exit_code == -1 and "timed out" in stderr.lower():
+                # nohup timeout is common on slow SSH connections but the job
+                # usually starts successfully. Verify by checking for the process.
+                # Fixes: https://github.com/fl-sean03/cloudcomputemanager/issues/7
+                verify_code, verify_out, _ = await provider.execute_command(
+                    instance.instance_id,
+                    "pgrep -f run_job.sh > /dev/null 2>&1 && echo RUNNING || echo NOT_RUNNING",
+                    timeout=15,
+                )
+                if "RUNNING" in verify_out:
+                    if not quiet:
+                        console.print("[green]Job started in background[/green] [dim](nohup SSH timed out but process verified)[/dim]")
+                    else:
+                        logger.info("Job started (verified after nohup timeout)", job_id=job.job_id)
+                else:
+                    error_msg = f"Failed to start job: nohup timed out and process not found"
+                    if not quiet:
+                        console.print(f"[red]{error_msg}[/red]")
+                    else:
+                        logger.error(error_msg)
             else:
                 error_msg = f"Failed to start job: {stderr}"
                 if not quiet:
