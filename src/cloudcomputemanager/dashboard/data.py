@@ -646,12 +646,24 @@ async def get_unmanaged_instances() -> list[dict]:
 
     try:
         async with get_session() as session:
+            # Get all job_ids that actually exist
+            job_ids_result = await session.execute(select(Job.job_id))
+            existing_job_ids = {row[0] for row in job_ids_result.all()}
+
+            # Find instances that are running but either:
+            # - have no job_id (created outside CCM)
+            # - have a job_id that doesn't exist in the jobs table (orphaned)
             stmt = select(Instance).where(
-                Instance.job_id.is_(None),
                 Instance.status.in_([InstanceStatus.RUNNING, InstanceStatus.STARTING, InstanceStatus.CREATING]),
             )
             result = await session.execute(stmt)
-            instances = result.scalars().all()
+            all_running = result.scalars().all()
+
+            # Filter to truly unmanaged/orphaned
+            instances = [
+                inst for inst in all_running
+                if inst.job_id is None or inst.job_id not in existing_job_ids
+            ]
 
         now = datetime.utcnow()
         for inst in instances:
