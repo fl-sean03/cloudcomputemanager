@@ -19,9 +19,9 @@
             <td>
                 {% set s = job.status|upper %}
                 {% if s == 'RUNNING' %}
-                <span class="status-running" title="Running">&#x25CF; Running</span>
+                <span class="status-running" title="Job is executing on instance">&#x25CF; Running</span>
                 {% elif s == 'PROVISIONING' %}
-                <span class="status-provisioning" title="Instance is starting up">&#x25D0; Starting</span>
+                <span class="status-provisioning" title="Instance is booting, installing software">&#x23F3; Starting</span>
                 {% elif s == 'RECOVERING' %}
                 <span class="status-recovering" title="Recovering from preemption">&#x25B2; Recovering</span>
                 {% elif s == 'CHECKPOINTING' %}
