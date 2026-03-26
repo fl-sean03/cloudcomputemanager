@@ -249,30 +249,83 @@ class RecoveryManager:
             exclude=exclude,
         )
 
+    async def _try_generate_namd_restart(
+        self,
+        job: Job,
+        sync_dir: Path,
+    ) -> bool:
+        """Check for NAMD restart files and generate restart config if possible.
+
+        Returns True if a restart config was generated in the sync dir.
+        """
+        command = job.command or ""
+        if "namd3" not in command.lower() and "namd" not in command.lower():
+            return False
+
+        xsc = sync_dir / "simulation.restart.xsc"
+        coor = sync_dir / "simulation.restart.coor"
+        vel = sync_dir / "simulation.restart.vel"
+
+        if not (xsc.exists() and coor.exists() and vel.exists()):
+            logger.info("No NAMD restart files in sync dir", job_id=job.job_id)
+            return False
+
+        try:
+            from cloudcomputemanager.checkpoint.namd_restart import generate_restart_config
+
+            result = generate_restart_config(restart_xsc=str(xsc))
+
+            if result["in_cooling"]:
+                logger.info("Checkpoint in cooling phase, will restart from scratch",
+                           job_id=job.job_id, step=result["step_number"])
+                return False
+
+            if result["remaining"] <= 0:
+                logger.info("Simulation already complete", job_id=job.job_id)
+                return False
+
+            if result["config"]:
+                config_path = sync_dir / "simulation_restart.namd"
+                config_path.write_text(result["config"])
+                logger.info(
+                    "Generated NAMD restart config",
+                    job_id=job.job_id,
+                    step=result["step_number"],
+                    remaining=result["remaining"],
+                    config_path=str(config_path),
+                )
+                return True
+
+        except Exception as e:
+            logger.warning("Failed to generate NAMD restart config",
+                          job_id=job.job_id, error=str(e))
+
+        return False
+
     async def start_recovered_job(
         self,
         job: Job,
         instance_id: str,
         has_checkpoint: bool,
+        namd_restart: bool = False,
     ) -> bool:
         """Start the job on the recovered instance."""
         import base64
 
-        # Build recovery-aware command
-        command = job.command or ""
+        if namd_restart:
+            # Use NAMD restart config (generated locally, already uploaded)
+            from cloudcomputemanager.checkpoint.namd_restart import generate_recovery_command
+            command = generate_recovery_command(has_restart_config=True)
+            logger.info("Using NAMD checkpoint-restart command", job_id=job.job_id)
+        else:
+            # Use original command
+            command = job.command or ""
 
-        # Wrap with checkpoint detection
+        # Wrap with exit code tracking
         wrapper_script = f'''#!/bin/bash
 # CCM Recovery Job Wrapper
 set -e
 cd /workspace
-
-# Check for checkpoint files
-CHECKPOINT_EXISTS=false
-if [ -f "/workspace/.ccm_checkpoint_marker" ] || [ -f "/workspace/restart.bin" ] || [ -f "/workspace/checkpoint.pt" ]; then
-    CHECKPOINT_EXISTS=true
-    echo "Checkpoint detected, resuming..."
-fi
 
 # Run the job
 {command}
@@ -359,8 +412,15 @@ exit $JOB_EXIT_CODE
 
         # Upload job files (from sync directory or original upload)
         sync_dir = self.settings.sync_local_path / job.job_id
+        namd_restart_generated = False
+
         if sync_dir.exists():
-            # Upload from sync directory (has latest files)
+            # Check for NAMD restart files in sync dir
+            namd_restart_generated = await self._try_generate_namd_restart(
+                job, sync_dir
+            )
+
+            # Upload from sync directory (has latest files + restart config)
             await self.provider.rsync_upload(
                 instance_id,
                 str(sync_dir) + "/",
@@ -372,8 +432,11 @@ exit $JOB_EXIT_CODE
         if has_checkpoint:
             checkpoint_restored = await self.restore_checkpoint(job, instance_id, checkpoint)
 
-        # Start the job
-        job_started = await self.start_recovered_job(job, instance_id, has_checkpoint)
+        # Start the job (use restart config if generated)
+        job_started = await self.start_recovered_job(
+            job, instance_id, has_checkpoint,
+            namd_restart=namd_restart_generated,
+        )
 
         if not job_started:
             # Clean up on failure
