@@ -392,6 +392,7 @@ class TestPreemptionHandling:
         mock_db_job = MagicMock()
         mock_db_job.attempt_number = 0
         mock_db_job.status = JobStatus.RUNNING
+        mock_db_job.retry_json = '{"max_attempts": 5}'
 
         # Mock the database session context manager
         with patch('cloudcomputemanager.daemon.monitor.get_session') as mock_session:

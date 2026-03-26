@@ -777,10 +777,15 @@ class JobMonitor:
                     except Exception as e:
                         logger.debug("Instance sync failed", error=str(e))
 
-                # Get running jobs
+                # Get ALL active jobs (not just RUNNING — also PROVISIONING, RECOVERING, CHECKPOINTING)
                 async with get_session() as session:
                     stmt = select(Job).where(
-                        Job.status == JobStatus.RUNNING
+                        Job.status.in_([
+                            JobStatus.RUNNING,
+                            JobStatus.PROVISIONING,
+                            JobStatus.RECOVERING,
+                            JobStatus.CHECKPOINTING,
+                        ])
                     )
                     result = await session.execute(stmt)
                     jobs = result.scalars().all()
@@ -794,7 +799,26 @@ class JobMonitor:
                     # Track monitored jobs
                     self._monitored_jobs.add(job.job_id)
 
-                    # Check completion first
+                    # For PROVISIONING/RECOVERING: only check if instance is alive
+                    # Don't check for exit code (job hasn't started yet)
+                    if job.status in (JobStatus.PROVISIONING, JobStatus.RECOVERING):
+                        healthy, reason = await self.check_instance_health(job.instance_id, job=job)
+                        if not healthy:
+                            logger.warning("Instance dead for non-running job",
+                                           job_id=job.job_id, status=job.status.value, reason=reason)
+                            async with get_session() as session:
+                                stmt = select(Job).where(Job.job_id == job.job_id)
+                                result = await session.execute(stmt)
+                                db_job = result.scalar_one_or_none()
+                                if db_job:
+                                    db_job.status = JobStatus.FAILED
+                                    db_job.error_message = f"Instance lost during {job.status.value}: {reason}"
+                                    db_job.completed_at = datetime.utcnow()
+                                    session.add(db_job)
+                            self._monitored_jobs.discard(job.job_id)
+                        continue
+
+                    # Check completion first (RUNNING/CHECKPOINTING jobs only)
                     completed, exit_code = await self.check_job_completion(job.instance_id)
                     if completed:
                         # For multi-stage jobs, try to advance to next stage
