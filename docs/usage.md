@@ -368,10 +368,39 @@ budget:
 | Scenario | What Happens |
 |----------|-------------|
 | **Laptop sleeps/closes** | Job keeps running (nohup). Run `ccm reconnect` when back. |
-| **Instance preempted** | Wrapper catches SIGTERM, sends SIGUSR1 for app checkpoint, writes exit 143. Daemon auto-recovers from checkpoint. |
+| **Instance preempted (SIGTERM)** | Wrapper catches SIGTERM, sends SIGUSR1 for app checkpoint, writes exit 143. Daemon auto-recovers from checkpoint. |
+| **Instance disappears** | Daemon detects `instance_not_found`, syncs last data, provisions new instance, uploads checkpoints, resumes. |
+| **GPU crash (SIGSEGV/SIGABRT)** | If exit code in `recover_on_exit_codes`, auto-recovers on different instance. Bad instance offer blacklisted for 24h. |
 | **Daemon was down** | On restart, `_reconcile_stale_jobs()` detects completed/dead jobs and handles them. |
-| **Instance dies, daemon down** | `ccm reconnect` checks Vast.ai API, marks for recovery. Then `ccm recover`. |
 | **Budget exceeded** | Daemon auto-terminates job, syncs results first, fires `on_budget_exceeded` notification. |
+
+### Long-Running Jobs (>4 hours)
+
+Vast.ai instances can disappear at any time — even on-demand. For jobs longer than 4 hours, **checkpoint-restart is mandatory**. See [`docs/SPOT_INSTANCE_SURVIVAL_GUIDE.md`](SPOT_INSTANCE_SURVIVAL_GUIDE.md) for the complete guide.
+
+Key settings for long jobs:
+```yaml
+sync:
+  interval_minutes: 5                      # Sync checkpoints every 5 min
+checkpoint:
+  patterns: ["checkpoint.*", "*.restart.*"] # Your app's checkpoint files
+retry:
+  max_attempts: 10                          # Allow many recoveries
+  recover_on_exit_codes: [139, 137, 134]    # GPU crashes → auto-retry
+resources:
+  cuda_version_min: 12.6                    # For NGC containers
+```
+
+### NAMD Checkpoint-Restart (Built-In)
+
+CCM has native support for NAMD molecular dynamics checkpoint recovery. When a NAMD job is recovered:
+1. Daemon finds synced `.restart.coor/.vel/.xsc` files
+2. Parses step number from `.xsc`
+3. Generates a restart config with `binCoordinates`/`binVelocities`/`extendedSystem`
+4. Preserves existing DCD as `simulation_before_{step}.dcd`
+5. Resumes production from the last checkpoint
+
+See [`docs/NAMD_CHECKPOINT_RESTART_DESIGN.md`](NAMD_CHECKPOINT_RESTART_DESIGN.md) for implementation details.
 
 ## Multi-Agent / Multi-Project Usage
 
