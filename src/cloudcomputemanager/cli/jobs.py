@@ -157,6 +157,7 @@ async def submit_job(
     sync_config = config.get("sync", {})
     budget = config.get("budget", {})
     upload_config = config.get("upload", {})
+    retry_config = config.get("retry", {})
     stages = config.get("stages", [])
     progress_config = config.get("progress", {})
     notifications = config.get("notifications", {})
@@ -308,6 +309,7 @@ async def submit_job(
         checkpoint_json=json.dumps(checkpoint_config),
         sync_json=json.dumps(sync_config),
         budget_json=json.dumps(budget),
+        retry_json=json.dumps(retry_config),
         instance_id=instance.instance_id,
         started_at=datetime.utcnow(),
     )

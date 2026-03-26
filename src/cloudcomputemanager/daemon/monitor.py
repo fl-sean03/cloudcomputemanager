@@ -428,14 +428,22 @@ class JobMonitor:
             db_job = result.scalar_one_or_none()
 
             if db_job:
-                if self.config.preemption_recovery and db_job.attempt_number < self.config.max_recovery_attempts:
+                # Use per-job retry config if available, fall back to daemon defaults
+                import json as _json
+                job_retry = _json.loads(db_job.retry_json) if db_job.retry_json else {}
+                max_attempts = job_retry.get("max_attempts", self.config.max_recovery_attempts)
+
+                if self.config.preemption_recovery and db_job.attempt_number < max_attempts:
                     db_job.status = JobStatus.RECOVERING
                     db_job.error_message = f"Preempted: {reason}"
-                    # Recovery will be handled by recovery module
+                    logger.info("Job set to RECOVERING",
+                               job_id=job.job_id, attempt=db_job.attempt_number, max=max_attempts)
                 else:
                     db_job.status = JobStatus.FAILED
-                    db_job.error_message = f"Preempted (max attempts): {reason}"
+                    db_job.error_message = f"Preempted (max attempts {max_attempts}): {reason}"
                     db_job.completed_at = datetime.utcnow()
+                    logger.info("Job FAILED (max attempts reached)",
+                               job_id=job.job_id, attempt=db_job.attempt_number, max=max_attempts)
 
                 session.add(db_job)
                 await session.commit()
