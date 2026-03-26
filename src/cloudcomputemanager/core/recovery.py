@@ -410,7 +410,35 @@ exit $JOB_EXIT_CODE
             instance_id=instance_id,
         )
 
-        # Upload job files (from sync directory or original upload)
+        # Upload original job files first (PSF, PRM, NAMD config, etc.)
+        upload_config = json.loads(job.sync_json) if job.sync_json else {}
+        # The upload source is stored separately — try to find it from job config
+        # Fall back to the original upload source path
+        import json as _json2
+        job_resources = _json2.loads(job.resources_json) if job.resources_json else {}
+
+        # Re-upload original job files from the upload source
+        # Parse upload config from the original job submission
+        # Note: upload_config is in the original job YAML, not stored in DB
+        # We need to find the original job package directory
+        original_source = None
+        if job.name:
+            # Try to find the job package by name pattern
+            snap_match = job.name.replace("hydro-453K-", "")  # e.g., "snapshot_003"
+            candidate = Path(f"/home/sf2/LabWork/Workspace/31-Hydrogenation/simulations/ensemble-20sample/jobs/{snap_match}")
+            if candidate.exists():
+                original_source = candidate
+
+        if original_source:
+            logger.info("Uploading original job files", source=str(original_source))
+            await self.provider.rsync_upload(
+                instance_id,
+                str(original_source) + "/",
+                "/workspace/",
+                exclude=["*.yaml"],
+            )
+
+        # Then overlay sync directory (has latest restart files, DCD, logs)
         sync_dir = self.settings.sync_local_path / job.job_id
         namd_restart_generated = False
 
@@ -420,7 +448,7 @@ exit $JOB_EXIT_CODE
                 job, sync_dir
             )
 
-            # Upload from sync directory (has latest files + restart config)
+            # Upload from sync directory (overlays on top of original files)
             await self.provider.rsync_upload(
                 instance_id,
                 str(sync_dir) + "/",
