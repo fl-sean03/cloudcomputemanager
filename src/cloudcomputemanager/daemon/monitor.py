@@ -97,7 +97,8 @@ class JobMonitor:
         try:
             exit_code, stdout, stderr = await self.provider.execute_command(
                 instance_id,
-                "cat /workspace/.ccm_exit_code 2>/dev/null || echo 'running'"
+                "cat /workspace/.ccm_exit_code 2>/dev/null || echo 'running'",
+                timeout=10,  # Short timeout — don't block monitor loop
             )
 
             if exit_code == 0 and stdout.strip() != "running":
