@@ -800,15 +800,17 @@ class JobMonitor:
                     # Track monitored jobs
                     self._monitored_jobs.add(job.job_id)
 
-                    # For PROVISIONING/RECOVERING: only check if instance is alive
-                    # Don't check for exit code (job hasn't started yet)
-                    if job.status in (JobStatus.PROVISIONING, JobStatus.RECOVERING):
+                    # RECOVERING jobs: skip — handled by recovery manager below
+                    if job.status == JobStatus.RECOVERING:
+                        continue
+
+                    # PROVISIONING jobs: check if instance came up
+                    if job.status == JobStatus.PROVISIONING:
                         healthy, reason = await self.check_instance_health(job.instance_id, job=job)
                         if not healthy:
-                            logger.warning("Instance dead for non-running job",
-                                           job_id=job.job_id, status=job.status.value, reason=reason)
-                            # Route through handle_preemption so retry logic applies
-                            await self.handle_preemption(job, f"instance_lost_during_{job.status.value}")
+                            logger.warning("Instance dead during provisioning",
+                                           job_id=job.job_id, reason=reason)
+                            await self.handle_preemption(job, f"instance_lost_during_provisioning")
                         continue
 
                     # Check completion first (RUNNING/CHECKPOINTING jobs only)
