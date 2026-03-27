@@ -856,7 +856,7 @@ class JobMonitor:
                     await self.update_job_progress(job)
 
                 # Handle recovery jobs periodically
-                if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 60:
+                if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 15:
                     self._last_recovery_check = asyncio.get_event_loop().time()
 
                     async with get_session() as session:

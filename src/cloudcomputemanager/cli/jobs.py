@@ -310,6 +310,7 @@ async def submit_job(
         sync_json=json.dumps(sync_config),
         budget_json=json.dumps(budget),
         retry_json=json.dumps(retry_config),
+        upload_json=json.dumps(upload_config),
         instance_id=instance.instance_id,
         started_at=datetime.utcnow(),
     )
