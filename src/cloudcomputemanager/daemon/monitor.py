@@ -806,16 +806,8 @@ class JobMonitor:
                         if not healthy:
                             logger.warning("Instance dead for non-running job",
                                            job_id=job.job_id, status=job.status.value, reason=reason)
-                            async with get_session() as session:
-                                stmt = select(Job).where(Job.job_id == job.job_id)
-                                result = await session.execute(stmt)
-                                db_job = result.scalar_one_or_none()
-                                if db_job:
-                                    db_job.status = JobStatus.FAILED
-                                    db_job.error_message = f"Instance lost during {job.status.value}: {reason}"
-                                    db_job.completed_at = datetime.utcnow()
-                                    session.add(db_job)
-                            self._monitored_jobs.discard(job.job_id)
+                            # Route through handle_preemption so retry logic applies
+                            await self.handle_preemption(job, f"instance_lost_during_{job.status.value}")
                         continue
 
                     # Check completion first (RUNNING/CHECKPOINTING jobs only)
