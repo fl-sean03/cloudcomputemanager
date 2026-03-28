@@ -1,6 +1,7 @@
 """Job monitoring for CCM daemon."""
 
 import asyncio
+import json as _json
 import signal
 from datetime import datetime
 from typing import Optional, Callable, Any
@@ -854,6 +855,21 @@ class JobMonitor:
 
                     # Update progress metrics
                     await self.update_job_progress(job)
+
+                    # Periodic sync — sync checkpoint/result files while job runs
+                    sync_config = _json.loads(job.sync_json) if job.sync_json else {}
+                    if sync_config.get("enabled"):
+                        sync_interval = sync_config.get("interval_minutes", 10) * 60
+                        last_sync = job.last_sync_at
+                        now_dt = datetime.utcnow()
+                        should_sync = (last_sync is None or
+                                      (now_dt - last_sync).total_seconds() > sync_interval)
+                        if should_sync:
+                            try:
+                                await self.sync_job_results(job)
+                            except Exception as e:
+                                logger.debug("Periodic sync failed",
+                                           job_id=job.job_id, error=str(e))
 
                 # Handle recovery jobs periodically
                 if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 15:
