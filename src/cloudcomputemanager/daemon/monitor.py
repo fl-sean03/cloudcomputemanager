@@ -866,7 +866,14 @@ class JobMonitor:
                                       (now_dt - last_sync).total_seconds() > sync_interval)
                         if should_sync:
                             try:
-                                await self.sync_job_results(job)
+                                # Timeout sync at 120s to prevent blocking the loop
+                                await asyncio.wait_for(
+                                    self.sync_job_results(job),
+                                    timeout=120,
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning("Periodic sync timed out",
+                                             job_id=job.job_id)
                             except Exception as e:
                                 logger.debug("Periodic sync failed",
                                            job_id=job.job_id, error=str(e))
@@ -898,6 +905,11 @@ class JobMonitor:
                                         logger.error("Recovery error", job_id=job.job_id, error=str(e))
 
                             self._recovery_task = asyncio.create_task(_run_recoveries(recovering_jobs))
+                            # Log unhandled exceptions from background task
+                            def _on_recovery_done(task):
+                                if task.exception():
+                                    logger.error("Recovery task crashed", error=str(task.exception()))
+                            self._recovery_task.add_done_callback(_on_recovery_done)
 
             except Exception as e:
                 logger.error("Monitor loop error", error=str(e))
