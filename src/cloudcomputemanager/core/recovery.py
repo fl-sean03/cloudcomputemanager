@@ -122,10 +122,12 @@ class RecoveryManager:
         # The vast.py provider will handle None values with sensible defaults
         gpu_type = resources.get("gpu_type")
         gpu_count = resources.get("gpu_count", 1)
-        gpu_memory_min = resources.get("gpu_memory_min")  # None if not specified
+        gpu_memory_min = resources.get("gpu_memory_min")
         disk_gb = resources.get("disk_gb", 50)
         max_hourly_rate = budget.get("max_hourly_rate")
         cuda_version_min = resources.get("cuda_version_min")
+        reliability_min = resources.get("reliability_min")
+        min_duration_hours = resources.get("min_duration_hours")
 
         logger.info(
             "Searching for recovery instance",
@@ -145,6 +147,8 @@ class RecoveryManager:
             max_hourly_rate=max_hourly_rate,
             exclude_offer_ids=excluded if excluded else None,
             cuda_version_min=cuda_version_min,
+            reliability_min=reliability_min,
+            min_duration_hours=min_duration_hours,
         )
 
         if not offers:

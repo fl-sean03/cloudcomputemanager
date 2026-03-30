@@ -224,13 +224,15 @@ async def submit_job(
     # Use user-specified values, falling back to provider defaults only if not specified
     # Note: resources keys are already normalized by load_config_with_template
     search_params = {
-        "gpu_type": resources.get("gpu_type"),  # None = any GPU type
+        "gpu_type": resources.get("gpu_type"),
         "gpu_count": resources.get("gpu_count", 1),
-        "gpu_memory_min": resources.get("gpu_memory_min"),  # None = use provider default
+        "gpu_memory_min": resources.get("gpu_memory_min"),
         "disk_gb_min": resources.get("disk_gb", 50),
         "max_hourly_rate": budget.get("max_hourly_rate"),
-        "cpu_cores_min": resources.get("cpu_cores"),  # Filter by minimum CPU cores
-        "cuda_version_min": resources.get("cuda_version_min"),  # Filter by CUDA version
+        "cpu_cores_min": resources.get("cpu_cores"),
+        "cuda_version_min": resources.get("cuda_version_min"),
+        "reliability_min": resources.get("reliability_min"),
+        "min_duration_hours": resources.get("min_duration_hours"),
     }
 
     if not quiet:

@@ -99,6 +99,8 @@ class VastProvider(CloudProvider):
         cpu_cores_min: Optional[int] = None,
         exclude_offer_ids: Optional[set[str]] = None,
         cuda_version_min: Optional[float] = None,
+        reliability_min: Optional[float] = None,
+        min_duration_hours: Optional[float] = None,
     ) -> list[ProviderOffer]:
         """Search for available GPU offers on Vast.ai.
 
@@ -145,6 +147,12 @@ class VastProvider(CloudProvider):
 
         if cuda_version_min:
             query_parts.append(f"cuda_vers>={cuda_version_min}")
+
+        if reliability_min:
+            query_parts.append(f"reliability2>={reliability_min}")
+
+        if min_duration_hours:
+            query_parts.append(f"duration>={int(min_duration_hours * 3600)}")
 
         query = " ".join(query_parts)
 
