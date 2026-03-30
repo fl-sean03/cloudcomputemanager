@@ -871,26 +871,33 @@ class JobMonitor:
                                 logger.debug("Periodic sync failed",
                                            job_id=job.job_id, error=str(e))
 
-                # Handle recovery jobs periodically
-                if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 15:
+                # Handle recovery jobs — spawn as background task so it doesn't block monitoring
+                if self.config.preemption_recovery and asyncio.get_event_loop().time() - self._last_recovery_check > 30:
                     self._last_recovery_check = asyncio.get_event_loop().time()
 
-                    async with get_session() as session:
-                        stmt = select(Job).where(Job.status == JobStatus.RECOVERING)
-                        result = await session.execute(stmt)
-                        recovering_jobs = result.scalars().all()
+                    # Only spawn if no recovery task already running
+                    if not hasattr(self, '_recovery_task') or self._recovery_task is None or self._recovery_task.done():
+                        async with get_session() as session:
+                            stmt = select(Job).where(Job.status == JobStatus.RECOVERING)
+                            result = await session.execute(stmt)
+                            recovering_jobs = result.scalars().all()
 
-                    if recovering_jobs:
-                        logger.info("Processing recovery jobs", count=len(recovering_jobs))
-                        for job in recovering_jobs:
-                            try:
-                                result = await recovery_manager.recover_job(job)
-                                if result.success:
-                                    logger.info("Job recovered", job_id=job.job_id, instance=result.new_instance_id)
-                                else:
-                                    logger.warning("Recovery failed", job_id=job.job_id, error=result.error)
-                            except Exception as e:
-                                logger.error("Recovery error", job_id=job.job_id, error=str(e))
+                        if recovering_jobs:
+                            logger.info("Spawning recovery task", count=len(recovering_jobs))
+
+                            async def _run_recoveries(jobs_to_recover):
+                                """Process recoveries without blocking the monitor loop."""
+                                for job in jobs_to_recover[:3]:  # Max 3 per batch
+                                    try:
+                                        result = await recovery_manager.recover_job(job)
+                                        if result.success:
+                                            logger.info("Job recovered", job_id=job.job_id, instance=result.new_instance_id)
+                                        else:
+                                            logger.warning("Recovery failed", job_id=job.job_id, error=result.error)
+                                    except Exception as e:
+                                        logger.error("Recovery error", job_id=job.job_id, error=str(e))
+
+                            self._recovery_task = asyncio.create_task(_run_recoveries(recovering_jobs))
 
             except Exception as e:
                 logger.error("Monitor loop error", error=str(e))
