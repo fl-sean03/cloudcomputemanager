@@ -441,6 +441,81 @@ The dashboard shows a single-page view at `http://localhost:8765/dashboard` with
 
 Live updates via Server-Sent Events — no manual refresh needed. All costs are computed live (elapsed × hourly rate), not stored values. Instance data (GPU type, $/hr, SSH info) is auto-synced from the Vast.ai API.
 
+## Best Practices & Tips
+
+### Instance Selection (Critical for Long Jobs)
+
+```yaml
+resources:
+  reliability_min: 0.99         # REQUIRED for jobs > 4 hours
+  min_duration_hours: 24        # Ensures host allows long rentals
+  cuda_version_min: 12.6        # For NGC containers (NAMD, PyTorch NGC)
+```
+
+**Why this matters**: Vast.ai is a peer-to-peer marketplace. Without reliability filtering, you'll land on residential hosts with unstable internet, power, and short rental windows. Jobs die after 2-8 hours. With `reliability_min: 0.99` and `min_duration_hours: 24`, you filter for established hosts that have 99%+ uptime and allow day-long rentals.
+
+### Docker Image Strategy
+
+- **Use common base images** (`nvidia/cuda`, `pytorch/pytorch`, `ubuntu`) — these are pre-cached on most hosts and start in seconds
+- **NGC HPC images** (`nvcr.io/hpc/namd`, `nvcr.io/hpc/gromacs`) are 5-8 GB and NOT cached on most hosts — provisioning takes 15-30 minutes
+- **If using a large image**: set `provisioning.timeout: 1800` (30 min) to allow time for image pull
+- **Alternative**: use `setup:` commands to install software on a cached base image
+
+### Budget Configuration
+
+```yaml
+budget:
+  max_cost_usd: 10.0            # Per-job total cost limit
+  max_hours: 9999               # Don't time-kill recovered jobs
+  max_hourly_rate: 0.55         # Allows reliable datacenter hosts
+```
+
+- **Don't set `max_hours` too low** — recovered jobs inherit the original creation time, so a 48h max_hours will kill a job that's been through recovery cycles even if it's only run for 10 actual hours
+- **`max_hourly_rate`** filters at search time — set it high enough to reach reliable hosts ($0.40-0.60 for RTX 4090)
+
+### Retry & Recovery
+
+```yaml
+retry:
+  max_attempts: 999             # Infinite retries for production jobs
+  recover_on_exit_codes: [139, 137, 134]  # GPU crashes → auto-retry
+```
+
+- **Set `max_attempts` high** for production campaigns — instances will fail and need recovery
+- **`recover_on_exit_codes`** catches instance-specific GPU crashes (SIGSEGV, OOM, SIGABRT) that would succeed on a different instance
+
+### Sync & Checkpointing
+
+```yaml
+sync:
+  interval_minutes: 5           # Sync every 5 min — max lost progress on failure
+checkpoint:
+  patterns: ["*.restart.*"]     # Your app's checkpoint files
+```
+
+- **Sync frequently** — if a host dies, you lose everything since the last sync
+- **5 minutes** is the recommended interval for production jobs (balance between overhead and data safety)
+- **Ensure your application writes checkpoint files** that can be used to resume (NAMD `restartfreq`, LAMMPS `restart`, PyTorch `torch.save`)
+
+### Common Pitfalls
+
+1. **Cheap ≠ Good**: $0.04/hr RTX 3060 instances are 10x cheaper but die 10x more often. Net cost is often higher due to wasted compute and recovery overhead.
+2. **"On-demand" doesn't mean reliable**: On Vast.ai, on-demand prevents bidding preemption but NOT host failures. The host machine itself can still go offline.
+3. **Recovery blocks monitoring**: Fixed in v0.2.0 (#26). If running an older version, recovery processing blocks the entire daemon — no syncs or health checks until recovery completes.
+4. **Ghost jobs**: If a host disappears between daemon poll cycles, the DB shows "RUNNING" but the instance is dead. The daemon detects this on the next cycle and routes to recovery.
+5. **DCD on restart**: NAMD creates a new DCD file on restart (doesn't append). Use CatDCD or MDAnalysis to merge segments.
+
+### Cost Estimation
+
+| GPU | $/hr (reliable) | ns/day (50K atoms) | Hours for 15ns | Cost per job |
+|-----|-----------------|--------------------|--------------------|-------------|
+| RTX 3060 | $0.07-0.10 | 12.6 | 29 | $2-3 |
+| RTX 4080 | $0.11-0.15 | 28 | 13 | $1.50-2 |
+| RTX 4090 | $0.30-0.55 | 35 | 10 | $3-5.50 |
+| A100 | $0.30-0.80 | 45 | 8 | $2.40-6.40 |
+
+**Recommendation**: RTX 4090 at $0.35-0.45/hr with `reliability_min: 0.99` is the best balance of speed, reliability, and cost for MD simulations.
+
 ## Built-in Templates
 
 | Name | Image | GPU | Checkpoint | Use Case |
