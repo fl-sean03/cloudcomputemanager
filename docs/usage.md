@@ -448,11 +448,18 @@ Live updates via Server-Sent Events — no manual refresh needed. All costs are 
 ```yaml
 resources:
   reliability_min: 0.99         # REQUIRED for jobs > 4 hours
-  min_duration_hours: 24        # Ensures host allows long rentals
   cuda_version_min: 12.6        # For NGC containers (NAMD, PyTorch NGC)
 ```
 
-**Why this matters**: Vast.ai is a peer-to-peer marketplace. Without reliability filtering, you'll land on residential hosts with unstable internet, power, and short rental windows. Jobs die after 2-8 hours. With `reliability_min: 0.99` and `min_duration_hours: 24`, you filter for established hosts that have 99%+ uptime and allow day-long rentals.
+**`reliability_min: 0.99` is the single most important setting.** From 469 jobs in the hydrogenation campaign:
+- Without filter: **1% survival** (158 dead, 1 alive)
+- With `reliability_min: 0.99`: **66% survival** (23 alive, 12 dead from other causes)
+
+The reliability score is Vast.ai's measure of host uptime history. Hosts with 0.99+ have proven thousands of hours of stable operation. Price does NOT correlate with reliability — the cheapest 0.99+ RTX 4090 is $0.27/hr, cheaper than many unreliable hosts.
+
+**You do NOT need a price floor.** The reliability filter handles quality. Just set `max_hourly_rate` to cap the upper end. CCM picks the cheapest offer matching all filters.
+
+**`min_duration_hours` is optional.** Most reliable hosts already have long duration limits (1000+ hours). Only needed if you specifically want to exclude short-rental hosts.
 
 ### Docker Image Strategy
 
@@ -505,16 +512,16 @@ checkpoint:
 4. **Ghost jobs**: If a host disappears between daemon poll cycles, the DB shows "RUNNING" but the instance is dead. The daemon detects this on the next cycle and routes to recovery.
 5. **DCD on restart**: NAMD creates a new DCD file on restart (doesn't append). Use CatDCD or MDAnalysis to merge segments.
 
-### Cost Estimation
+### Cost Estimation (with `reliability_min: 0.99`)
 
-| GPU | $/hr (reliable) | ns/day (50K atoms) | Hours for 15ns | Cost per job |
-|-----|-----------------|--------------------|--------------------|-------------|
-| RTX 3060 | $0.07-0.10 | 12.6 | 29 | $2-3 |
-| RTX 4080 | $0.11-0.15 | 28 | 13 | $1.50-2 |
-| RTX 4090 | $0.30-0.55 | 35 | 10 | $3-5.50 |
-| A100 | $0.30-0.80 | 45 | 8 | $2.40-6.40 |
+| GPU | Cheapest reliable | ns/day (50K) | Hours for 15ns | $/job | Verdict |
+|-----|-------------------|-------------|----------------|-------|---------|
+| RTX 4070 Ti | $0.08 | 22 | 16.5 | $1.32 | Best value (if 16h is OK) |
+| RTX 4080S | $0.14 | 30 | 12.1 | $1.71 | Good balance |
+| RTX 4090 | $0.27 | 35 | 10.4 | $2.78 | Safest (completes fastest) |
+| A100 SXM | $0.77 | 55 | 6.6 | $5.07 | Overkill for 50K atoms |
 
-**Recommendation**: RTX 4090 at $0.35-0.45/hr with `reliability_min: 0.99` is the best balance of speed, reliability, and cost for MD simulations.
+**Recommendation**: RTX 4090 with `reliability_min: 0.99` for production campaigns. The cheapest reliable RTX 4090 is ~$0.27/hr — no need for a price floor, the reliability filter handles quality.
 
 ## Built-in Templates
 
