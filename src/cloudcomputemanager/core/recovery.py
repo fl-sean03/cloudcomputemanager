@@ -166,10 +166,15 @@ class RecoveryManager:
         """Create a new instance for recovery."""
         resources = job.resources or {}
 
+        # CRITICAL: Set label so sync_all_instances doesn't auto-terminate as "unmanaged"
+        from cloudcomputemanager.core.instances import build_instance_label
+        label = build_instance_label(job.job_id, job.project or "", job.name)
+
         instance = await self.provider.create_instance(
             offer_id=offer_id,
             image=job.image,
             disk_gb=resources.get("disk_gb", 50),
+            label=label,
         )
 
         if not instance:
