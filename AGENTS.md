@@ -11,11 +11,11 @@
 - Agent-native APIs (CLI, REST, Python SDK)
 - Automated GPU cost-performance benchmarking
 
-## Current Status (2026-03-23)
+## Current Status (2026-04-03)
 
-**Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience)
+**Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience Hardening)
 **Tests**: 314 unit tests passing (75 sprint + 239 existing), real Vast.ai lifecycle validated
-**LOC**: ~14,500 source + ~6,000 tests
+**LOC**: ~15,500 source + ~6,000 tests
 **Provider**: Vast.ai (via CLI + SSH subprocess)
 
 ### Sprint Status
@@ -113,12 +113,43 @@ src/cloudcomputemanager/
 
 - **Web Dashboard**: `ccm dashboard` — single-page view of all jobs, costs, events, alerts with live SSE updates
 
+## Resilience Hardening (2026-03-25 to 2026-04-03)
+
+20 issues fixed (#7-#28) during a 10-day hydrogenation ensemble campaign (601 job attempts, 18 snapshots):
+
+| Issue | Fix | Impact |
+|-------|-----|--------|
+| #7 | Nohup SSH timeout handling | False "failed to start" alarms |
+| #8 | Auto-recover on configurable exit codes | GPU crashes (SIGSEGV) auto-retry |
+| #9 | Case-insensitive status filter | CLI usability |
+| #10 | Offer blacklist for bad instances | Avoid known-bad hosts |
+| #12 | CUDA version filter | Prevent NGC container segfaults |
+| #17 | NAMD checkpoint-restart config generation | Resume from .restart files |
+| #19 | Store retry_json in Job record | Auto-recovery was completely broken |
+| #20 | Upload original job files during recovery | NAMD couldn't find inputs |
+| #21 | Route PROVISIONING failures through recovery | Instance-never-started recovery |
+| #22 | Reduce SSH timeout in monitor (60→10s) | Dead instances blocked loop |
+| #23 | Skip RECOVERING jobs in health check | Infinite re-preemption loop |
+| #24 | Generic upload_json, remove hardcoded paths | Recovery works for any project |
+| #25 | Periodic sync during job runtime | Checkpoints never saved before |
+| #26 | Non-blocking recovery (async task) | **ROOT CAUSE**: daemon blocked for hours |
+| #27 | Reliability + duration filters | Filter unreliable residential hosts |
+| #28 | Instance labels during recovery | Recovery instances auto-terminated |
+
+Key learnings:
+- `reliability_min: 0.99` is the single most important filter (1% → 66% survival)
+- Recovery must be non-blocking (async task) or it freezes the entire daemon
+- Instance labels are mandatory — unlabeled instances get auto-terminated
+- Periodic sync must run during job lifetime, not just on completion
+- See `docs/SPOT_INSTANCE_SURVIVAL_GUIDE.md` and `docs/usage.md` Best Practices
+
 ## Remaining Limitations
 
 - Instance reuse across jobs not yet implemented — **Backlog**
 - PackStore still over-engineered — **Backlog**
 - S3 sync not implemented
 - No Windows daemon support
+- Recovery uses original job's resources_json (may have outdated price ceilings)
 
 ## Development
 
