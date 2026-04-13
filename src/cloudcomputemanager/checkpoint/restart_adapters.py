@@ -104,12 +104,23 @@ class NAMDRestartAdapter(RestartAdapter):
     def prepare_restart(
         self, command: str, sync_dir: Path, job_id: str,
     ) -> Optional[RestartResult]:
-        xsc = sync_dir / "simulation.restart.xsc"
-        coor = sync_dir / "simulation.restart.coor"
-        vel = sync_dir / "simulation.restart.vel"
+        # Find NAMD restart files by glob — NAMD's outputName can be anything
+        # (simulation, npt_equil, prod_453K, etc.), and the restart files are
+        # named <outputName>.restart.{coor,vel,xsc}. Prefer the matched triplet.
+        xsc_files = sorted(sync_dir.glob("*.restart.xsc"))
+        # Skip rotation .old files that NAMD writes as backups
+        xsc_files = [f for f in xsc_files if not f.name.endswith(".xsc.old")]
+        xsc = coor = vel = None
+        for candidate in xsc_files:
+            stem = candidate.name[:-len(".restart.xsc")]  # e.g. "npt_equil"
+            c_coor = sync_dir / f"{stem}.restart.coor"
+            c_vel = sync_dir / f"{stem}.restart.vel"
+            if c_coor.exists() and c_vel.exists():
+                xsc, coor, vel = candidate, c_coor, c_vel
+                break
 
-        if not (xsc.exists() and coor.exists() and vel.exists()):
-            logger.debug("No NAMD restart files in sync dir", job_id=job_id)
+        if xsc is None:
+            logger.debug("No NAMD restart file triplet in sync dir", job_id=job_id)
             return None
 
         try:

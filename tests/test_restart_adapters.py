@@ -111,6 +111,54 @@ class TestNAMDRestartAdapter:
         assert (tmp_path / "simulation_restart.namd").exists()
         assert "5000000" in result.description
 
+    def test_prepare_restart_custom_outputname(self, tmp_path):
+        """NAMD jobs with custom outputName (e.g. npt_equil) must be detected."""
+        # Real NPT job writes npt_equil.restart.* instead of simulation.restart.*
+        (tmp_path / "npt_equil.restart.xsc").write_text(
+            "# NAMD xsc\n#$LABELS step\n1240000 99.0 0 0 0 99.0 0 0 0 99.0 49.5 49.5 49.5\n"
+        )
+        (tmp_path / "npt_equil.restart.coor").write_bytes(b"\x00" * 100)
+        (tmp_path / "npt_equil.restart.vel").write_bytes(b"\x00" * 100)
+
+        a = NAMDRestartAdapter()
+        result = a.prepare_restart("namd3 +p8 npt_equilibration_453K.namd", tmp_path, "job_1")
+
+        assert result is not None, "Adapter must handle custom outputName (npt_equil)"
+        assert "1240000" in result.description
+
+    def test_prepare_restart_ignores_old_backups(self, tmp_path):
+        """NAMD writes .old backup files during restart rotation — skip them."""
+        # Only .old files present = no valid checkpoint → None
+        (tmp_path / "npt_equil.restart.xsc.old").write_text(
+            "# old\n#$LABELS step\n1000000 99 0 0 0 99 0 0 0 99 49.5 49.5 49.5\n"
+        )
+        (tmp_path / "npt_equil.restart.coor.old").write_bytes(b"\x00" * 100)
+        (tmp_path / "npt_equil.restart.vel.old").write_bytes(b"\x00" * 100)
+
+        a = NAMDRestartAdapter()
+        result = a.prepare_restart("namd3 +p8 config.namd", tmp_path, "job_1")
+        assert result is None, "Should not match .old backup files"
+
+    def test_prepare_restart_picks_matched_triplet(self, tmp_path):
+        """If both .xsc and .xsc.old exist, pick the live triplet not .old."""
+        # Live triplet
+        (tmp_path / "npt_equil.restart.xsc").write_text(
+            "# NAMD xsc\n#$LABELS step\n1240000 99 0 0 0 99 0 0 0 99 49.5 49.5 49.5\n"
+        )
+        (tmp_path / "npt_equil.restart.coor").write_bytes(b"\x00" * 100)
+        (tmp_path / "npt_equil.restart.vel").write_bytes(b"\x00" * 100)
+        # Backup triplet (older)
+        (tmp_path / "npt_equil.restart.xsc.old").write_text(
+            "# NAMD xsc\n#$LABELS step\n1000000 100 0 0 0 100 0 0 0 100 50 50 50\n"
+        )
+        (tmp_path / "npt_equil.restart.coor.old").write_bytes(b"\x00" * 100)
+        (tmp_path / "npt_equil.restart.vel.old").write_bytes(b"\x00" * 100)
+
+        a = NAMDRestartAdapter()
+        result = a.prepare_restart("namd3 +p8 config.namd", tmp_path, "job_1")
+        assert result is not None
+        assert "1240000" in result.description, "Should use live triplet, not .old"
+
 
 # =============================================================================
 # GROMACSRestartAdapter
