@@ -260,6 +260,7 @@ class Job(SQLModel, table=True):
     budget_json: str = Field(default="{}", description="JSON-encoded Budget")
     retry_json: str = Field(default="{}", description="JSON-encoded RetryPolicy")
     upload_json: str = Field(default="{}", description="JSON-encoded upload config (source path for recovery)")
+    restart_json: str = Field(default="{}", description="JSON-encoded restart config (user-defined restart command for recovery)")
     input_data_json: str = Field(default="[]", description="JSON-encoded list of InputData")
 
     # Metadata

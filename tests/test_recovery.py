@@ -218,6 +218,32 @@ class TestRecoveryManager:
         checkpoint_cmd = any("checkpoint_marker" in cmd for _, cmd in provider.executed_commands)
         assert checkpoint_cmd
 
+    @pytest.mark.asyncio
+    async def test_start_recovered_job_with_command_override(self):
+        """Test that command_override replaces the original command."""
+        provider = MockProvider()
+        rm = RecoveryManager(provider=provider)
+
+        job = Job(
+            name="test-job",
+            status=JobStatus.RECOVERING,
+            command="python train.py",
+            image="test:latest",
+        )
+
+        success = await rm.start_recovered_job(
+            job, "inst123", has_checkpoint=False,
+            command_override="python train.py --resume-from checkpoint.pt",
+        )
+        assert success
+        # The wrapper script should contain the override command
+        setup_cmd = provider.executed_commands[0][1]
+        # base64 decode the script to verify
+        import base64
+        b64_part = setup_cmd.split("echo ")[1].split(" | ")[0]
+        script = base64.b64decode(b64_part).decode()
+        assert "--resume-from checkpoint.pt" in script
+
     def test_max_attempts_logic(self):
         """Test max attempts checking logic."""
         rm = RecoveryManager(max_attempts=3)

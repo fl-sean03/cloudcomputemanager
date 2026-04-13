@@ -1,0 +1,92 @@
+# End-to-end preemption recovery test
+#
+# Pure Python (no dependencies) — runs on any Docker image.
+# Simulates a 100-step computation with checkpoints every 10 steps.
+# Each step takes 2 seconds, total ~200s.
+#
+# The script is restart-aware: it reads checkpoint.json on startup.
+# After recovery, the log shows "RESUMED FROM STEP X" proving e2e recovery.
+
+name: e2e-preemption-test
+project: adapter-e2e-test
+image: vastai/pytorch
+
+command: |
+  cd /workspace && python3 << 'PYEOF'
+  import json, os, time, math, random
+
+  CKPT = "/workspace/checkpoint.json"
+  MARKER = "/workspace/resume_marker.txt"
+
+  # Resume from checkpoint if exists
+  start_step = 0
+  state = {"weights": [random.random() for _ in range(10)]}
+  if os.path.exists(CKPT):
+      with open(CKPT) as f:
+          data = json.load(f)
+      start_step = data["step"] + 1
+      state = data["state"]
+      print(f"RESUMED FROM STEP {start_step} (checkpoint found)")
+      with open(MARKER, "a") as f:
+          f.write(f"resumed_at_step={start_step}\n")
+  else:
+      print("Starting fresh (no checkpoint)")
+      with open(MARKER, "w") as f:
+          f.write("fresh_start\n")
+
+  total_steps = 100
+  for step in range(start_step, total_steps):
+      # Simulate computation
+      state["weights"] = [w * math.cos(step * 0.1) + random.gauss(0, 0.01) for w in state["weights"]]
+      result = sum(w**2 for w in state["weights"])
+
+      if step % 10 == 0:
+          print(f"Step {step}/{total_steps}: result={result:.6f}")
+
+      # Save checkpoint every 10 steps
+      if (step + 1) % 10 == 0:
+          with open(CKPT, "w") as f:
+              json.dump({"step": step, "state": state}, f)
+          print(f"  Checkpoint saved at step {step}")
+
+      time.sleep(2)
+
+  print(f"COMPUTATION COMPLETE ({total_steps} steps)")
+  with open(MARKER, "a") as f:
+      f.write(f"completed={total_steps}\n")
+  PYEOF
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 20
+  reliability_min: 0.95
+
+budget:
+  max_hourly_rate: 0.15
+  max_cost_usd: 1.00
+
+sync:
+  enabled: true
+  interval: 30
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "checkpoint.json"
+    - "resume_marker.txt"
+    - "job.log"
+    - ".ccm_exit_code"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "checkpoint.json"
+  interval: 30
+
+retry:
+  max_attempts: 5
+  backoff_minutes: 1
+  recover_on_exit_codes: [137, 139]
+
+terminate_on_complete: true

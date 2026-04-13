@@ -11,11 +11,11 @@
 - Agent-native APIs (CLI, REST, Python SDK)
 - Automated GPU cost-performance benchmarking
 
-## Current Status (2026-04-03)
+## Current Status (2026-04-09)
 
-**Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience Hardening)
-**Tests**: 314 unit tests passing (75 sprint + 239 existing), real Vast.ai lifecycle validated
-**LOC**: ~15,500 source + ~6,000 tests
+**Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience Hardening + Restart Adapters)
+**Tests**: 390 unit tests passing (76 adapter + 314 existing), real Vast.ai e2e preemption recovery validated
+**LOC**: ~16,000 source + ~6,500 tests
 **Provider**: Vast.ai (via CLI + SSH subprocess)
 
 ### Sprint Status
@@ -47,7 +47,7 @@ src/cloudcomputemanager/
 ├── agents/         [1,150 LOC] AI agent SDK + SSH credential exposure
 ├── api/            [905 LOC]   FastAPI REST endpoints
 ├── benchmarks/     [NEW]       GPU cost-performance benchmark framework
-├── checkpoint/     [747 LOC]   LAMMPS/PyTorch checkpoint detection + orchestration
+├── checkpoint/     [1,100 LOC] Checkpoint detection + restart adapters (8 app types)
 ├── cli/            [4,200 LOC] Typer CLI (45+ commands) + exec/upload/ssh by job_id
 ├── core/           [2,100 LOC] Models (CostRecord, stages, progress), templates (variables), recovery
 ├── daemon/         [1,100 LOC] Monitor (multi-stage, progress parsing, notifications)
@@ -65,7 +65,8 @@ src/cloudcomputemanager/
 | `providers/base.py` | CloudProvider ABC, managed_instance context manager, GPU tier search |
 | `daemon/monitor.py` | Monitor loop: health checks, budget enforcement, progress tracking |
 | `core/models.py` | All SQLModel tables: Job, Instance, Checkpoint, SyncRecord |
-| `core/recovery.py` | Preemption recovery: checkpoint restore + instance replacement |
+| `core/recovery.py` | Preemption recovery: restart adapter chain + instance replacement |
+| `checkpoint/restart_adapters.py` | RestartAdapter ABC + 8 app-specific adapters |
 | `core/validation.py` | Pre-flight performance validation (LAMMPS, NAMD, PyTorch) |
 | `core/templates.py` | Template loading, merging, resource key aliasing |
 | `agents/sdk.py` | Async Python SDK for AI agents |
@@ -78,8 +79,9 @@ src/cloudcomputemanager/
 - Job lifecycle: PENDING → PROVISIONING → RUNNING → COMPLETED/FAILED
 - SSH retry logic (3x exponential backoff on exit code 255)
 - rsync upload/download with retry
-- LAMMPS/PyTorch checkpoint detection
-- Preemption recovery (find checkpoint → new instance → restore → resume)
+- LAMMPS/PyTorch/GROMACS/NAMD/QE/VASP checkpoint detection
+- Preemption recovery with auto-detected restart adapters (8 app types)
+- User-defined restart commands via `restart:` YAML section
 - Continuous rsync sync with pattern filtering
 - Multi-signal health checks (SSH + process + workspace + disk space)
 - Per-job budget enforcement (max_cost_usd, max_hours, max_hourly_rate)
@@ -112,6 +114,28 @@ src/cloudcomputemanager/
 - **Instance heartbeat**: Background loop writes `/workspace/.ccm_heartbeat` every 60s for liveness detection
 
 - **Web Dashboard**: `ccm dashboard` — single-page view of all jobs, costs, events, alerts with live SSE updates
+
+## Generalized Restart Adapters (2026-04-09)
+
+Replaced NAMD-only hardcoded restart logic with a pluggable adapter chain that auto-detects application type from command string:
+
+| Adapter | Detects | Strategy |
+|---------|---------|----------|
+| NAMD | `namd` in cmd | Generate restart config from `.xsc` checkpoint |
+| GROMACS | `gmx`/`mdrun` | Inject `-cpi state.cpt` flag |
+| LAMMPS | `lmp`/`lammps` | Generate wrapper with restart file variable |
+| Quantum ESPRESSO | `pw.x`/`ph.x` | Rewrite `restart_mode` in input |
+| VASP | `vasp` | Copy CONTCAR → POSCAR (WAVECAR auto-detected) |
+| PyTorch Lightning | `lightning`/`trainer.fit` | Append `--ckpt_path last` |
+| HF Trainer | `--do_train`/`run_clm` | Append `--resume_from_checkpoint True` |
+| Generic | Everything else | Re-run original command (industry standard) |
+
+Priority: user-defined `restart:` YAML > auto-detected adapter > original command.
+
+- `checkpoint/restart_adapters.py` — RestartAdapter ABC + 8 implementations (~350 LOC)
+- `core/recovery.py` — Adapter chain replaces `_try_generate_namd_restart()` + `namd_restart: bool`
+- `core/models.py` — Added `restart_json` field to Job
+- 76 unit tests + end-to-end preemption recovery validated on real Vast.ai instances
 
 ## Resilience Hardening (2026-03-25 to 2026-04-03)
 

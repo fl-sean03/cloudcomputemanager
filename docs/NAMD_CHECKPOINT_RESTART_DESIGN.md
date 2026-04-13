@@ -1,7 +1,7 @@
 # NAMD Checkpoint-Restart Recovery Design
 
 **Date**: 2026-03-26
-**Status**: Design complete, ready for implementation
+**Status**: Implemented. NAMD logic now lives in `NAMDRestartAdapter` within the generalized `checkpoint/restart_adapters.py` system (2026-04-09). The NAMD-specific config generation is in `checkpoint/namd_restart.py` (unchanged). See `docs/usage.md` "Automatic Restart Adapters" for the full system.
 **Issue**: Jobs on Vast.ai lose progress when hosts disappear (even on-demand). Need to resume from last checkpoint instead of restarting from scratch.
 
 ---

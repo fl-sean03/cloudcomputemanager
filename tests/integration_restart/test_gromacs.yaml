@@ -1,0 +1,117 @@
+# GROMACS adapter integration test
+# Runs a short water box simulation that writes checkpoint files.
+# GROMACS auto-checkpoints every 15 min by default, but we use -cpt 0.1
+# to checkpoint every 6 seconds for testing.
+
+name: adapter-test-gromacs
+project: adapter-integration-test
+image: nvcr.io/hpc/gromacs:2023.2
+
+command: |
+  cd /workspace && \
+  gmx grompp -f md.mdp -c conf.gro -p topol.top -o topol.tpr 2>&1 && \
+  gmx mdrun -deffnm md -nsteps 50000 -cpt 0.1 -v 2>&1 && \
+  echo "GROMACS_TEST_COMPLETE"
+
+setup: |
+  cd /workspace
+  # Create a tiny water box simulation
+  cat > conf.gro << 'GRO_EOF'
+  Water box
+  6
+      1SOL     OW    1   0.230   0.628   0.113
+      1SOL    HW1    2   0.137   0.568   0.070
+      1SOL    HW2    3   0.231   0.589   0.210
+      2SOL     OW    4   0.805   0.395   0.726
+      2SOL    HW1    5   0.879   0.343   0.790
+      2SOL    HW2    6   0.710   0.339   0.711
+     1.0   1.0   1.0
+  GRO_EOF
+
+  cat > topol.top << 'TOP_EOF'
+  ; Topology for water test
+  [ defaults ]
+  1  2  yes  0.5  0.8333
+
+  [ atomtypes ]
+  OW  8  15.99940  0.0  A  3.15061e-01  6.36386e-01
+  HW  1   1.00800  0.0  A  0.00000e+00  0.00000e+00
+
+  [ moleculetype ]
+  SOL  2
+
+  [ atoms ]
+  1  OW  1  SOL  OW  1  -0.8476  15.99940
+  2  HW  1  SOL  HW1 1   0.4238   1.00800
+  3  HW  1  SOL  HW2 1   0.4238   1.00800
+
+  [ bonds ]
+  1  2  1  0.09572  502416.0
+  1  3  1  0.09572  502416.0
+
+  [ angles ]
+  2  1  3  1  104.52  628.02
+
+  [ system ]
+  Water
+
+  [ molecules ]
+  SOL  2
+  TOP_EOF
+
+  cat > md.mdp << 'MDP_EOF'
+  integrator  = md
+  dt          = 0.001
+  nsteps      = 50000
+  nstxout     = 1000
+  nstvout     = 1000
+  nstenergy   = 1000
+  nstlog      = 1000
+  nstxout-compressed = 1000
+  cutoff-scheme = Verlet
+  ns_type     = grid
+  nstlist     = 10
+  rlist       = 1.0
+  coulombtype = Cut-off
+  rcoulomb    = 1.0
+  rvdw        = 1.0
+  pbc         = xyz
+  tcoupl      = v-rescale
+  tc-grps     = System
+  tau_t       = 0.1
+  ref_t       = 300
+  gen_vel     = yes
+  gen_temp    = 300
+  gen_seed    = 42
+  MDP_EOF
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 20
+
+budget:
+  max_hourly_rate: 0.12
+  max_cost_usd: 0.50
+
+sync:
+  enabled: true
+  interval: 60
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "*.cpt"
+    - "*.log"
+    - "*.edr"
+    - "md.*"
+  exclude_patterns:
+    - "*.so"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "*.cpt"
+  interval: 60
+
+terminate_on_complete: true

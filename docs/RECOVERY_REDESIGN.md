@@ -1,7 +1,7 @@
 # CCM Recovery System Redesign
 
 **Date**: 2026-03-27
-**Status**: Design doc — informed by 3-day failure and comprehensive audit
+**Status**: Implemented. All fixes landed (#19-#28). Recovery now uses generalized restart adapter chain (2026-04-09) instead of NAMD-specific hardcoding. See `checkpoint/restart_adapters.py`.
 
 ## Root Causes of Failure
 

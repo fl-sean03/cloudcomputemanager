@@ -15,7 +15,7 @@ src/cloudcomputemanager/
 ├── agents/sdk.py          — Async Python SDK (CloudComputeManagerAgent, JobSpec)
 ├── api/                   — FastAPI REST API (/v1/jobs, /v1/instances, etc.)
 ├── benchmarks/            — GPU cost-performance benchmark framework
-├── checkpoint/            — Checkpoint detection (LAMMPS, PyTorch, generic)
+├── checkpoint/            — Checkpoint detection + restart adapters (8 app types)
 ├── cli/
 │   ├── main.py            — All command registration (50+ commands)
 │   ├── jobs.py            — submit, list, status, wait, reconnect, recover
@@ -31,7 +31,7 @@ src/cloudcomputemanager/
 │   ├── templates.py       — YAML loading, merging, ${VAR} substitution
 │   ├── config.py          — pydantic-settings (all CCM_ env vars)
 │   ├── database.py        — Async SQLite via aiosqlite
-│   ├── recovery.py        — Preemption recovery orchestration
+│   ├── recovery.py        — Preemption recovery orchestration (restart adapter chain)
 │   └── cleanup.py         — Stale job / orphan instance cleanup
 ├── daemon/
 │   ├── monitor.py         — Main loop: health, completion, stages, progress, budget
@@ -98,6 +98,7 @@ If you are an AI agent using CCM, follow these rules:
 | `upload` | Optional | No files uploaded to instance |
 | `sync` | Optional | No continuous result sync (final sync still happens) |
 | `checkpoint` | Optional | No checkpoint detection for recovery |
+| `restart` | Optional | CCM auto-detects app type from command (NAMD, GROMACS, LAMMPS, etc.) |
 | `notifications` | Optional | No alerts on completion/failure |
 
 ### Progress Regex Examples by Workload
@@ -210,6 +211,12 @@ checkpoint:
   strategy: application               # application | filesystem
   interval_minutes: 30
   patterns: ["*.restart", "*.pt", "*.ckpt"]
+
+# Restart override (for apps not auto-detected by CCM)
+# If omitted, CCM auto-detects from the command string (NAMD, GROMACS, LAMMPS, etc.)
+restart:
+  command: "my-simulator --resume --from checkpoint.dat"
+  detect_checkpoint: "checkpoint.dat"  # Only use restart command if this glob matches
 
 # Multi-stage pipelines (daemon auto-advances on exit 0)
 stages:
@@ -368,8 +375,8 @@ budget:
 | Scenario | What Happens |
 |----------|-------------|
 | **Laptop sleeps/closes** | Job keeps running (nohup). Run `ccm reconnect` when back. |
-| **Instance preempted (SIGTERM)** | Wrapper catches SIGTERM, sends SIGUSR1 for app checkpoint, writes exit 143. Daemon auto-recovers from checkpoint. |
-| **Instance disappears** | Daemon detects `instance_not_found`, syncs last data, provisions new instance, uploads checkpoints, resumes. |
+| **Instance preempted (SIGTERM)** | Wrapper catches SIGTERM, sends SIGUSR1 for app checkpoint, writes exit 143. Daemon auto-detects app type, generates restart command via adapter chain, recovers on new instance. |
+| **Instance disappears** | Daemon detects `instance_not_found`, syncs last data, provisions new instance, uploads checkpoints, restart adapter prepares resume command, job continues from checkpoint. |
 | **GPU crash (SIGSEGV/SIGABRT)** | If exit code in `recover_on_exit_codes`, auto-recovers on different instance. Bad instance offer blacklisted for 24h. |
 | **Daemon was down** | On restart, `_reconcile_stale_jobs()` detects completed/dead jobs and handles them. |
 | **Budget exceeded** | Daemon auto-terminates job, syncs results first, fires `on_budget_exceeded` notification. |
@@ -391,16 +398,87 @@ resources:
   cuda_version_min: 12.6                    # For NGC containers
 ```
 
-### NAMD Checkpoint-Restart (Built-In)
+### Automatic Restart Adapters
 
-CCM has native support for NAMD molecular dynamics checkpoint recovery. When a NAMD job is recovered:
-1. Daemon finds synced `.restart.coor/.vel/.xsc` files
+When a job is preempted and recovered onto a new instance, CCM **auto-detects the application type** from the command string and uses the appropriate restart strategy. No user configuration needed for supported applications.
+
+The recovery flow:
+1. Daemon detects preemption (exit code 143 or instance disappears)
+2. Syncs latest checkpoint files from old instance to local disk
+3. Provisions a new instance, uploads original files + synced checkpoints
+4. **Restart adapter chain** determines the correct resume command
+5. Job starts on new instance and resumes from checkpoint
+
+#### Supported Applications
+
+| Application | Detection | Checkpoint Files | Restart Strategy |
+|-------------|-----------|-----------------|-----------------|
+| **NAMD** | `namd` in command | `.restart.xsc/.coor/.vel` | Generates full restart config (cooling/production aware) |
+| **GROMACS** | `gmx` or `mdrun` | `*.cpt` | Injects `-cpi state.cpt` flag |
+| **LAMMPS** | `lmp` or `lammps` | `restart.*.bin` | Generates wrapper passing restart file as variable |
+| **Quantum ESPRESSO** | `pw.x`, `ph.x` | `*.save/` dirs | Rewrites `restart_mode = 'restart'` in input |
+| **VASP** | `vasp` | `WAVECAR` + `CONTCAR` | Copies CONTCAR → POSCAR (WAVECAR auto-detected) |
+| **PyTorch Lightning** | `lightning` or `trainer.fit` | `*.ckpt` | Appends `--ckpt_path last` |
+| **HF Trainer** | `--do_train` or `run_clm` | `checkpoint-*/` dirs | Appends `--resume_from_checkpoint True` |
+| **Generic** | Everything else | (none checked) | Re-runs original command (industry standard) |
+
+The adapter chain is ordered by specificity — first match wins, Generic is always last.
+
+#### How It Works (Priority Order)
+
+1. **User-defined restart** (highest priority) — if `restart:` is set in job YAML and checkpoint files match `detect_checkpoint`, use `restart.command`
+2. **Auto-detected adapter** — match command string against adapter chain, call `prepare_restart()` with synced checkpoint files
+3. **Original command** (fallback) — if no adapter matches or no checkpoint files found, re-run the original command
+
+#### Self-Healing Applications
+
+Some applications automatically resume if checkpoint files are present:
+- **GROMACS** with `-cpi` flag: reads checkpoint on startup
+- **VASP**: auto-reads WAVECAR if it exists (ISTART default)
+- **PyTorch scripts** that check for `checkpoint.pt` on startup
+
+For these, CCM's periodic sync ensures checkpoint files are on the new instance. The adapter adds any missing flags; the application does the rest.
+
+#### Custom Applications (restart: YAML)
+
+For applications not in the adapter list, add a `restart:` section to your job YAML:
+
+```yaml
+name: my-custom-job
+command: "my-simulator --config run.conf"
+
+restart:
+  command: "my-simulator --config run.conf --resume-from latest"
+  detect_checkpoint: "checkpoint_*.dat"  # Only use restart command if these exist
+```
+
+CCM checks `restart.command` first (highest priority). If `detect_checkpoint` is set, the restart command is only used when matching files exist in the sync directory — otherwise it falls back to the original command.
+
+**Tip**: If your application already checks for checkpoint files on startup (like the PyTorch example above), you don't need a `restart:` section at all. CCM syncs all files to `/workspace` on the new instance, and your script picks them up automatically.
+
+#### NAMD Deep Restart (Built-In)
+
+NAMD requires the most complex restart handling — a full config file must be generated with `binCoordinates`/`binVelocities`/`extendedSystem`, correct `firsttimestep`, and awareness of cooling vs production phases. CCM handles this automatically:
+
+1. Finds synced `.restart.coor/.vel/.xsc` files
 2. Parses step number from `.xsc`
-3. Generates a restart config with `binCoordinates`/`binVelocities`/`extendedSystem`
-4. Preserves existing DCD as `simulation_before_{step}.dcd`
-5. Resumes production from the last checkpoint
+3. Detects cooling vs production phase
+4. Generates a restart config that resumes from the exact step
+5. Preserves existing DCD as `simulation_before_{step}.dcd`
+6. Resumes from the last checkpoint
 
-See [`docs/NAMD_CHECKPOINT_RESTART_DESIGN.md`](NAMD_CHECKPOINT_RESTART_DESIGN.md) for implementation details.
+This was battle-tested during a 700+ job campaign (20-sample ensemble, 14 days, ~$100 total).
+
+See [`docs/NAMD_CHECKPOINT_RESTART_DESIGN.md`](NAMD_CHECKPOINT_RESTART_DESIGN.md) for NAMD-specific implementation details.
+
+#### Implementation
+
+The adapter system lives in `checkpoint/restart_adapters.py`:
+- `RestartAdapter` ABC with `detect(command)` and `prepare_restart(command, sync_dir, job_id)`
+- 8 adapter implementations in a priority-ordered registry
+- `get_restart_adapter(command)` returns the first matching adapter
+- `recovery.py` calls the adapter chain during `recover_job()`
+- 76 unit tests + end-to-end validated on real Vast.ai infrastructure
 
 ## Multi-Agent / Multi-Project Usage
 
@@ -631,10 +709,13 @@ but if you hit timeouts, increase `provisioning.timeout` in the job YAML.
 
 | File | What It Controls |
 |------|-----------------|
-| `core/models.py` | All data models — Job fields, enums, CostRecord |
+| `core/models.py` | All data models — Job fields (incl. `restart_json`), enums, CostRecord |
+| `core/recovery.py` | Preemption recovery — adapter chain, user-defined restart, instance replacement |
 | `core/wrapper.py` | SIGTERM-aware wrapper (single source, used by 3 call sites) |
 | `core/templates.py` | YAML loading, template merging, `${VAR}` substitution |
 | `core/environment.py` | Environment parsing, validation, setup command generation |
+| `checkpoint/restart_adapters.py` | RestartAdapter ABC + 8 implementations (NAMD, GROMACS, LAMMPS, QE, VASP, PL, HF, Generic) |
+| `checkpoint/namd_restart.py` | NAMD-specific restart config generation (cooling/production phase aware) |
 | `daemon/monitor.py` | Main loop: completion, health, stages, progress, notifications, budget |
 | `cli/jobs.py` | Job submission flow (with environment integration), wait, reconnect |
 | `cli/batch.py` | Matrix expansion + parallel batch submission |

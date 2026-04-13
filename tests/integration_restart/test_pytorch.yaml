@@ -1,0 +1,88 @@
+# PyTorch checkpoint adapter integration test
+# Trains a tiny model for a few epochs, saves checkpoints,
+# then we verify the generic adapter handles it correctly.
+
+name: adapter-test-pytorch
+project: adapter-integration-test
+image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+command: |
+  cd /workspace && python -c "
+  import torch
+  import torch.nn as nn
+  import torch.optim as optim
+  import os
+
+  # Tiny model — just enough to produce checkpoint files
+  model = nn.Sequential(nn.Linear(10, 64), nn.ReLU(), nn.Linear(64, 1))
+  optimizer = optim.Adam(model.parameters(), lr=0.001)
+  criterion = nn.MSELoss()
+
+  # Check for existing checkpoint (restart-aware)
+  start_epoch = 0
+  ckpt_path = '/workspace/checkpoint_latest.pt'
+  if os.path.exists(ckpt_path):
+      ckpt = torch.load(ckpt_path, weights_only=False)
+      model.load_state_dict(ckpt['model'])
+      optimizer.load_state_dict(ckpt['optimizer'])
+      start_epoch = ckpt['epoch'] + 1
+      print(f'Resumed from epoch {start_epoch}')
+
+  # Train a few epochs with random data
+  for epoch in range(start_epoch, 10):
+      x = torch.randn(100, 10)
+      y = torch.randn(100, 1)
+      pred = model(x)
+      loss = criterion(pred, y)
+      optimizer.zero_grad()
+      loss.backward()
+      optimizer.step()
+      print(f'Epoch {epoch}: loss={loss.item():.4f}')
+
+      # Save checkpoint every 3 epochs
+      if (epoch + 1) % 3 == 0:
+          torch.save({
+              'epoch': epoch,
+              'model': model.state_dict(),
+              'optimizer': optimizer.state_dict(),
+              'loss': loss.item(),
+          }, ckpt_path)
+          torch.save({
+              'epoch': epoch,
+              'model': model.state_dict(),
+              'optimizer': optimizer.state_dict(),
+              'loss': loss.item(),
+          }, f'/workspace/checkpoint_epoch_{epoch}.pt')
+          print(f'  Saved checkpoint at epoch {epoch}')
+
+  print('PYTORCH_TEST_COMPLETE')
+  "
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 20
+
+budget:
+  max_hourly_rate: 0.12
+  max_cost_usd: 0.50
+
+sync:
+  enabled: true
+  interval: 60
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "checkpoint_*.pt"
+    - "*.log"
+  exclude_patterns:
+    - "*.so"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "checkpoint_*.pt"
+  interval: 60
+
+terminate_on_complete: true

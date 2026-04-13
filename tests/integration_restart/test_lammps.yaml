@@ -1,0 +1,68 @@
+# LAMMPS adapter integration test
+# Runs a short LJ simulation that writes restart files, then we verify
+# the adapter can detect and prepare a restart command.
+
+name: adapter-test-lammps
+project: adapter-integration-test
+image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+command: |
+  pip install lammps -q 2>&1 && cd /workspace && cat > input.in << 'LAMMPS_EOF'
+  # Simple LJ liquid — writes restart files for adapter testing
+  units lj
+  atom_style atomic
+  lattice fcc 0.8442
+  region box block 0 10 0 10 0 10
+  create_box 1 box
+  create_atoms 1 box
+  mass 1 1.0
+  pair_style lj/cut 2.5
+  pair_coeff 1 1 1.0 1.0 2.5
+  velocity all create 1.0 87287
+
+  # Write restart files every 1000 steps
+  restart 1000 restart.*.bin
+
+  thermo 500
+  timestep 0.005
+  fix 1 all nvt temp 1.0 1.0 0.5
+
+  # Short run — just enough to write restart files
+  run 3000
+  write_restart final.restart.bin
+  print "LAMMPS_TEST_COMPLETE"
+  LAMMPS_EOF
+  python -m lammps.run -in input.in -log log.lammps 2>&1 || lmp -in input.in -log log.lammps 2>&1
+
+resources:
+  gpu_type: RTX_3060
+  gpu_count: 1
+  gpu_memory_min: 8
+  disk_gb: 20
+
+budget:
+  max_hourly_rate: 0.12
+  max_cost_usd: 0.50
+
+sync:
+  enabled: true
+  interval: 60
+  source: /workspace
+  destination: ./results
+  include_patterns:
+    - "restart.*"
+    - "*.restart.*"
+    - "log.lammps"
+    - "input.in"
+  exclude_patterns:
+    - "*.so"
+    - "*.a"
+
+checkpoint:
+  enabled: true
+  patterns:
+    - "restart.*.bin"
+    - "*.restart.bin"
+  interval: 60
+
+terminate_on_complete: true
