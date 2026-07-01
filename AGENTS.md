@@ -33,7 +33,7 @@ Active development sprint started 2026-03-23. See `docs/SPRINT_2026-03-23.md` fo
 
 ### Why This Sprint
 
-CCM was **abandoned mid-campaign** during MXene Campaign 2026 (see `~/AFRL/7-MXenesProject/docs/CCM_FEEDBACK_FROM_MXENE_CAMPAIGN.md`). The core infrastructure is solid but three critical gaps blocked real usage:
+CCM was **abandoned mid-campaign** during MXene Campaign 2026 (see `~/work/research/mxene-shear/docs/CCM_FEEDBACK_FROM_MXENE_CAMPAIGN.md`). The core infrastructure is solid but three critical gaps blocked real usage:
 1. No way to run setup commands (e.g., `apt install lammps`) before the job
 2. Hard-coded 300s provisioning timeout
 3. No mid-flight interaction (can't check progress, upload files, chain stages)
@@ -178,7 +178,7 @@ Key learnings:
 ## Development
 
 ```bash
-cd ~/Workspace/main/46-CCM
+cd ~/work/compute/ccm
 pip install -e ".[dev]"
 pytest tests/ --ignore=tests/test_e2e_full_lifecycle.py --ignore=tests/test_integration_vast.py
 
@@ -188,8 +188,10 @@ pytest tests/test_integration_vast.py --run-integration
 
 ## Related Resources
 
-- **MXene benchmarks**: `~/AFRL/7-MXenesProject/benchmarks/` (GPU cost analysis, run_comparison.py)
-- **MXene campaign feedback**: `~/AFRL/7-MXenesProject/docs/CCM_FEEDBACK_FROM_MXENE_CAMPAIGN.md`
+- **MXene benchmarks**: `~/work/research/mxene-shear/benchmarks/` (GPU cost analysis, run_comparison.py)
+- **MXene campaign feedback**: `~/work/research/mxene-shear/docs/CCM_FEEDBACK_FROM_MXENE_CAMPAIGN.md`
+
+*(Paths above updated 2026-07-01 after the 2026-06-13 workspace reorg: the old `~/AFRL/7-MXenesProject` tree is now `~/work/research/mxene-shear`; CCM itself lives at `~/work/compute/ccm`. All targets verified to exist as of 2026-07-01.)*
 - **Sprint plan**: `docs/SPRINT_2026-03-23.md`
 - **Design doc**: `DESIGN.md` (original architecture, 400+ lines)
 - **Old improvement plan**: `docs/CCM_IMPROVEMENT_PLAN_2026-02-26.md` (GPU query bug, Rich display bug)
