@@ -191,7 +191,7 @@ pytest tests/test_integration_vast.py --run-integration
 - **MXene benchmarks**: `~/work/research/mxene-shear/benchmarks/` (GPU cost analysis, run_comparison.py)
 - **MXene campaign feedback**: `~/work/research/mxene-shear/docs/CCM_FEEDBACK_FROM_MXENE_CAMPAIGN.md`
 
-*(Paths above updated 2026-07-01 after the 2026-06-13 workspace reorg: the old `~/AFRL/7-MXenesProject` tree is now `~/work/research/mxene-shear`; CCM itself lives at `~/work/compute/ccm`. All targets verified to exist as of 2026-07-01.)*
+*(Paths above updated 2026-07-01 after the 2026-06-13 workspace reorg: the old AFRL "7-MXenesProject" tree is now `~/work/research/mxene-shear`; CCM itself lives at `~/work/compute/ccm`. All targets verified to exist as of 2026-07-01.)*
 - **Sprint plan**: `docs/SPRINT_2026-03-23.md`
 - **Design doc**: `DESIGN.md` (original architecture, 400+ lines)
 - **Old improvement plan**: `docs/CCM_IMPROVEMENT_PLAN_2026-02-26.md` (GPU query bug, Rich display bug)
