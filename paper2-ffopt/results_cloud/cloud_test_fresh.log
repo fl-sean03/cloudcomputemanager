@@ -1,0 +1,6 @@
+Usage: ccm jobs submit [OPTIONS] CONFIG_FILE
+Try 'ccm jobs submit --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value for 'CONFIG_FILE': Path                                        │
+│ 'paper2-ffopt/cloud/openmm-fe-job-condaenv.yaml' does not exist.             │
+╰──────────────────────────────────────────────────────────────────────────────╯

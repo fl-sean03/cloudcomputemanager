@@ -301,7 +301,7 @@ class VastProvider(CloudProvider):
 
     def _parse_instance(self, data: dict) -> ProviderInstance:
         """Parse instance data from Vast.ai API."""
-        # Map status
+        # Map status from actual_status (Docker container status)
         # Handle None value (API can return null for actual_status)
         vast_status = (data.get("actual_status") or "unknown").lower()
         status_map = {
@@ -310,25 +310,41 @@ class VastProvider(CloudProvider):
             "exited": ProviderStatus.STOPPED,
             "stopped": ProviderStatus.STOPPED,
             "error": ProviderStatus.ERROR,
+            "offline": ProviderStatus.STOPPED,
+            "created": ProviderStatus.STARTING,
         }
         status = status_map.get(vast_status, ProviderStatus.PENDING)
 
+        # Override with cur_state/intended_status when instance is truly dead
+        # actual_status can be stale (e.g., "created" when instance is stopped)
+        cur_state = (data.get("cur_state") or "").lower()
+        intended = (data.get("intended_status") or "").lower()
+        if cur_state == "stopped" and intended == "stopped":
+            status = ProviderStatus.STOPPED
+        elif cur_state == "error":
+            status = ProviderStatus.ERROR
+
         # Get SSH info
-        # Note: ssh_host + ssh_port are for the SSH proxy (sshX.vast.ai:port)
-        # The ports mapping is for direct connections to the host IP
-        # When using SSH proxy (which is the default), use ssh_host + ssh_port
+        # Prefer direct connection (public_ipaddr + port mapping) over SSH proxy.
+        # The proxy (sshX.vast.ai) is unreliable and causes recovery failures.
+        # Direct connection is more reliable when available.
         ssh_host = data.get("ssh_host", "")
         ssh_port = data.get("ssh_port", 22)
 
-        # Only use port mapping if not using SSH proxy (i.e., direct connection)
-        # SSH proxy hosts look like "sshX.vast.ai"
         ports = data.get("ports", {})
-        if not ssh_host.endswith(".vast.ai") and ports and "22/tcp" in ports:
+        public_ip = data.get("public_ipaddr")
+
+        # Use direct connection if public IP and port mapping are available
+        if public_ip and ports and "22/tcp" in ports:
             port_info = ports["22/tcp"]
+            direct_port = None
             if isinstance(port_info, list) and port_info:
-                ssh_port = int(port_info[0].get("HostPort", ssh_port))
+                direct_port = int(port_info[0].get("HostPort", 0))
             elif isinstance(port_info, dict):
-                ssh_port = int(port_info.get("HostPort", ssh_port))
+                direct_port = int(port_info.get("HostPort", 0))
+            if direct_port:
+                ssh_host = public_ip
+                ssh_port = direct_port
 
         # Jupyter URL
         jupyter_url = None

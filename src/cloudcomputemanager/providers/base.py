@@ -255,8 +255,25 @@ class CloudProvider(ABC):
         import time
 
         start_time = time.monotonic()
+        consecutive_gone = 0  # Track consecutive "instance gone" checks
         while (time.monotonic() - start_time) < timeout:
             instance = await self.get_instance(instance_id)
+
+            # Early exit: instance is dead/gone — don't wait the full timeout
+            if instance is None:
+                consecutive_gone += 1
+                if consecutive_gone >= 3:
+                    _base_logger.warning("Instance gone during provisioning, bailing early",
+                                   instance_id=instance_id)
+                    return False
+            elif instance.status in (ProviderStatus.STOPPED, ProviderStatus.ERROR,
+                                     ProviderStatus.TERMINATED):
+                _base_logger.warning("Instance died during provisioning",
+                               instance_id=instance_id, status=instance.status.value)
+                return False
+            else:
+                consecutive_gone = 0  # Reset counter on any valid response
+
             if instance and instance.status == ProviderStatus.RUNNING:
                 # Verify SSH access
                 try:

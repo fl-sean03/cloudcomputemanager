@@ -338,32 +338,38 @@ async def submit_job(
         error_msg = f"Instance {instance.instance_id} failed to start within {provisioning_timeout}s"
         if not quiet:
             console.print(f"[red]{error_msg}![/red]")
-            console.print("[yellow]Destroying instance to prevent charges...[/yellow]")
         else:
             logger.error(error_msg)
-        # Mark job as FAILED
+
+        # If retry config exists, set RECOVERING so daemon can pick it up
+        has_retry = retry_config and retry_config.get("max_attempts", 0) > 1
+        target_status = JobStatus.RECOVERING if has_retry else JobStatus.FAILED
+
         async with get_session() as session:
             from sqlmodel import select as sel
             stmt = sel(Job).where(Job.job_id == early_job_id)
             result = await session.execute(stmt)
             db_job = result.scalar_one_or_none()
             if db_job:
-                db_job.status = JobStatus.FAILED
+                db_job.status = target_status
                 db_job.error_message = error_msg
-                db_job.completed_at = datetime.utcnow()
+                if target_status == JobStatus.FAILED:
+                    db_job.completed_at = datetime.utcnow()
                 session.add(db_job)
+
         try:
             await provider.terminate_instance(instance.instance_id)
+        except Exception:
+            pass
+
+        if has_retry:
             if not quiet:
-                console.print("[green]Instance destroyed successfully.[/green]")
+                console.print("[yellow]Job set to RECOVERING — daemon will retry automatically.[/yellow]")
             else:
-                logger.info("Instance destroyed", instance_id=instance.instance_id)
-        except Exception as e:
+                logger.info("Job set to RECOVERING for daemon retry", job_id=early_job_id)
+        else:
             if not quiet:
-                console.print(f"[red]Failed to destroy instance: {e}[/red]")
-                console.print(f"[yellow]Manually destroy with: vastai destroy instance {instance.instance_id}[/yellow]")
-            else:
-                logger.error("Failed to destroy instance", instance_id=instance.instance_id, error=str(e))
+                console.print("[red]Job marked FAILED (no retry config).[/red]")
         return
 
     if not quiet:

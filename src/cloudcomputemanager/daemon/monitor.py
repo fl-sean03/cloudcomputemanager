@@ -15,6 +15,7 @@ from cloudcomputemanager.core.database import init_db, get_session
 from cloudcomputemanager.core.config import get_settings
 from cloudcomputemanager.core.models import Job, JobStatus
 from cloudcomputemanager.providers.vast import VastProvider
+from cloudcomputemanager.providers.base import ProviderStatus
 
 
 logger = structlog.get_logger()
@@ -28,6 +29,7 @@ class EventType(Enum):
     JOB_PREEMPTED = "job_preempted"
     SYNC_COMPLETED = "sync_completed"
     INSTANCE_TERMINATED = "instance_terminated"
+    JOB_RECOVERED = "job_recovered"
     MONITOR_ERROR = "monitor_error"
 
 
@@ -153,11 +155,14 @@ class JobMonitor:
                 "df -BG /workspace 2>/dev/null | tail -1 | awk '{print $4}' || echo 'unknown'",
             ]
 
-            # Add process check if job has a process pattern
+            # Add process check — use explicit pattern or fall back to run_job.sh
             process_pattern = None
             if job:
                 job_config = job.resources or {}
                 process_pattern = job_config.get("process_pattern")
+            if not process_pattern:
+                # Default: check if the CCM wrapper is still running
+                process_pattern = "run_job.sh"
             if process_pattern:
                 health_cmd_parts.append(
                     f"pgrep -f {process_pattern!r} > /dev/null && echo 'PROC_OK' || echo 'PROC_STOPPED'"
@@ -805,13 +810,41 @@ class JobMonitor:
                     if job.status == JobStatus.RECOVERING:
                         continue
 
-                    # PROVISIONING jobs: check if instance came up
+                    # PROVISIONING jobs: only check for truly dead instances.
+                    # STARTING/PENDING/loading are NORMAL during provisioning (Docker pull takes 5-10 min).
+                    # Don't call check_instance_health which expects RUNNING status.
                     if job.status == JobStatus.PROVISIONING:
-                        healthy, reason = await self.check_instance_health(job.instance_id, job=job)
-                        if not healthy:
-                            logger.warning("Instance dead during provisioning",
-                                           job_id=job.job_id, reason=reason)
-                            await self.handle_preemption(job, f"instance_lost_during_provisioning")
+                        try:
+                            instance = await self.provider.get_instance(job.instance_id)
+                            if instance is None:
+                                # Instance gone entirely
+                                logger.warning("Instance gone during provisioning",
+                                               job_id=job.job_id)
+                                await self.handle_preemption(job, "instance_lost_during_provisioning")
+                            elif instance.status in (ProviderStatus.STOPPED, ProviderStatus.ERROR,
+                                                     ProviderStatus.TERMINATED):
+                                # Instance died
+                                logger.warning("Instance died during provisioning",
+                                               job_id=job.job_id, status=instance.status.value)
+                                await self.handle_preemption(job, f"instance_{instance.status.value}_during_provisioning")
+                            elif instance.status == ProviderStatus.RUNNING:
+                                # Instance is up — check if setup sentinel exists
+                                try:
+                                    exit_code, stdout, _ = await self.provider.execute_command(
+                                        job.instance_id,
+                                        "test -f /tmp/.ccm_setup_done && echo READY || echo WAITING",
+                                        timeout=10,
+                                    )
+                                    if "READY" in stdout:
+                                        # Transition to RUNNING is handled by the CLI submit flow
+                                        # If we see RUNNING+READY here, the CLI may have exited early
+                                        logger.info("Instance ready during provisioning check",
+                                                    job_id=job.job_id)
+                                except Exception:
+                                    pass
+                            # else: STARTING/PENDING — normal, keep waiting
+                        except Exception as e:
+                            logger.debug("Provisioning check error", job_id=job.job_id, error=str(e))
                         continue
 
                     # Check completion first (RUNNING/CHECKPOINTING jobs only)
@@ -883,26 +916,60 @@ class JobMonitor:
                     self._last_recovery_check = asyncio.get_event_loop().time()
 
                     # Only spawn if no recovery task already running
-                    if not hasattr(self, '_recovery_task') or self._recovery_task is None or self._recovery_task.done():
+                    recovery_task_done = (
+                        not hasattr(self, '_recovery_task')
+                        or self._recovery_task is None
+                        or self._recovery_task.done()
+                    )
+
+                    if recovery_task_done:
                         async with get_session() as session:
                             stmt = select(Job).where(Job.status == JobStatus.RECOVERING)
                             result = await session.execute(stmt)
                             recovering_jobs = result.scalars().all()
 
                         if recovering_jobs:
-                            logger.info("Spawning recovery task", count=len(recovering_jobs))
+                            self._emit_event(MonitorEvent(
+                                event_type=EventType.MONITOR_ERROR,
+                                job_id="",
+                                data={"message": f"Recovery: {len(recovering_jobs)} jobs pending, spawning recovery task"},
+                            ))
+
+                            emit_event = self._emit_event  # capture for closure
 
                             async def _run_recoveries(jobs_to_recover):
-                                """Process recoveries without blocking the monitor loop."""
-                                for job in jobs_to_recover[:3]:  # Max 3 per batch
+                                """Process recoveries concurrently (max 5 at a time)."""
+                                batch = jobs_to_recover[:5]
+
+                                async def _recover_one(job):
                                     try:
+                                        emit_event(MonitorEvent(
+                                            event_type=EventType.MONITOR_ERROR,
+                                            job_id=job.job_id,
+                                            data={"message": f"Recovery: attempting {job.name}"},
+                                        ))
                                         result = await recovery_manager.recover_job(job)
                                         if result.success:
-                                            logger.info("Job recovered", job_id=job.job_id, instance=result.new_instance_id)
+                                            emit_event(MonitorEvent(
+                                                event_type=EventType.JOB_RECOVERED,
+                                                job_id=job.job_id,
+                                                instance_id=result.new_instance_id,
+                                                data={"checkpoint_restored": result.checkpoint_restored},
+                                            ))
                                         else:
-                                            logger.warning("Recovery failed", job_id=job.job_id, error=result.error)
+                                            emit_event(MonitorEvent(
+                                                event_type=EventType.MONITOR_ERROR,
+                                                job_id=job.job_id,
+                                                data={"message": f"Recovery failed: {result.error}"},
+                                            ))
                                     except Exception as e:
-                                        logger.error("Recovery error", job_id=job.job_id, error=str(e))
+                                        emit_event(MonitorEvent(
+                                            event_type=EventType.MONITOR_ERROR,
+                                            job_id=job.job_id,
+                                            data={"message": f"Recovery exception: {e}"},
+                                        ))
+
+                                await asyncio.gather(*[_recover_one(j) for j in batch])
 
                             self._recovery_task = asyncio.create_task(_run_recoveries(recovering_jobs))
                             # Log unhandled exceptions from background task
