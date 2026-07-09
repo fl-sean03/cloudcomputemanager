@@ -15,8 +15,13 @@
 
 **Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience Hardening + Restart Adapters)
 **Tests**: 390 unit tests passing (76 adapter + 314 existing), real Vast.ai e2e preemption recovery validated
+  *(2026-07-09 correction: the default run — `pytest tests/ --ignore=tests/test_e2e_full_lifecycle.py --ignore=tests/test_integration_vast.py` — now collects 449 tests; measured result: 445 passed, 4 failed in 7.04s (2 in `tests/test_dashboard.py::TestDashboardRoutes`, 2 in `tests/test_restart_adapters.py::TestNAMDRestartAdapter` — see `docs/audits/2026-07-09-full-audit.md` in the parent workspace). Run via a fresh `pip install -e ".[dev]"` venv on Python 3.12.3; no persistent Python env for CCM exists on this machine — create a venv per CLAUDE.md to run the suite.)*
 **LOC**: ~16,000 source + ~6,500 tests
 **Provider**: Vast.ai (via CLI + SSH subprocess)
+
+### Parked work (2026-07-09)
+
+Branch `parked/uncommitted-2026-04` holds a single closeout commit (`4cec574`) capturing ~2026-04 uncommitted WIP: +257/−68 across `checkpoint/namd_restart.py`, `daemon/monitor.py`, `providers/vast.py`, `cli/jobs.py`, `providers/base.py`, plus a log file. It is **unreviewed and unmerged by design** — the owner (Sean) adjudicates it. Do not merge it, rebase it, or build on it.
 
 ### Sprint Status
 
