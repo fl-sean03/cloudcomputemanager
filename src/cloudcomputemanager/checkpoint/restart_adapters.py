@@ -110,16 +110,15 @@ class NAMDRestartAdapter(RestartAdapter):
         xsc_files = sorted(sync_dir.glob("*.restart.xsc"))
         # Skip rotation .old files that NAMD writes as backups
         xsc_files = [f for f in xsc_files if not f.name.endswith(".xsc.old")]
-        xsc = coor = vel = None
+        triplets = []
         for candidate in xsc_files:
             stem = candidate.name[:-len(".restart.xsc")]  # e.g. "npt_equil"
             c_coor = sync_dir / f"{stem}.restart.coor"
             c_vel = sync_dir / f"{stem}.restart.vel"
             if c_coor.exists() and c_vel.exists():
-                xsc, coor, vel = candidate, c_coor, c_vel
-                break
+                triplets.append((candidate, c_coor, c_vel))
 
-        if xsc is None:
+        if not triplets:
             logger.debug("No NAMD restart file triplet in sync dir", job_id=job_id)
             return None
 
@@ -127,9 +126,38 @@ class NAMDRestartAdapter(RestartAdapter):
             from cloudcomputemanager.checkpoint.namd_restart import (
                 generate_recovery_command,
                 generate_restart_config,
+                parse_xsc_step,
             )
 
-            result = generate_restart_config(restart_xsc=str(xsc))
+            # After a prior recovery the restarted run writes its own
+            # outputName, so multiple triplets can coexist — resume from the
+            # furthest-along one, not the alphabetically-first.
+            best = None
+            for c_xsc, c_coor, c_vel in triplets:
+                try:
+                    step = parse_xsc_step(str(c_xsc))
+                except (OSError, ValueError) as e:
+                    logger.debug(
+                        "Skipping unparseable NAMD xsc", file=str(c_xsc), error=str(e)
+                    )
+                    continue
+                if best is None or step > best[0]:
+                    best = (step, c_xsc, c_coor, c_vel)
+            if best is None:
+                logger.warning("No parseable NAMD restart triplet", job_id=job_id)
+                return None
+            _, xsc, coor, vel = best
+
+            result = generate_restart_config(
+                restart_xsc=str(xsc),
+                # Bare names — resolved against /workspace on the instance
+                restart_coor=coor.name,
+                restart_vel=vel.name,
+                restart_xsc_ref=xsc.name,
+                # The scripted cooling schedule only exists in the campaign's
+                # cooling+production protocol; constant-T jobs restart anywhere
+                cooling_protocol="cooling" in command.lower(),
+            )
 
             if result["remaining"] <= 0:
                 logger.info("NAMD simulation already complete", job_id=job_id)

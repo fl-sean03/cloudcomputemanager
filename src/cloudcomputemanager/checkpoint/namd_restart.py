@@ -57,6 +57,7 @@ def generate_restart_config(
     output_name: str = "simulation",
     dcdfreq: int = 10000,
     restartfreq: int = 50000,
+    cooling_protocol: bool = True,
 ) -> dict:
     """Generate a NAMD restart configuration.
 
@@ -72,20 +73,28 @@ def generate_restart_config(
         output_name: Base name for output files
         dcdfreq: DCD write frequency
         restartfreq: Restart file write frequency
+        cooling_protocol: Whether the job runs the scripted cooling+production
+            protocol (1000→453 K ramp over the first 2,500,000 steps). The ramp
+            lives in the original protocol file and cannot be reproduced by a
+            continuation config, so mid-cooling checkpoints restart from scratch.
+            Constant-temperature jobs (NPT equilibration, plain production) set
+            this False and can restart from any step.
 
     Returns:
         dict with keys:
             config: str — NAMD config file content
             step_number: int — step number from checkpoint
             remaining: int — remaining steps to run
-            in_cooling: bool — whether checkpoint is in cooling phase
+            in_cooling: bool — whether checkpoint is in the campaign cooling
+                phase (always False when cooling_protocol=False)
     """
     step_number = parse_xsc_step(restart_xsc)
 
-    # Determine if we're still in cooling phase
-    # Cooling: 14 steps × 150,000 + 400,000 equilibration = 2,500,000 steps
+    # Cooling: 14 steps × 150,000 + 400,000 equilibration = 2,500,000 steps.
+    # Only meaningful for cooling_protocol jobs — a constant-T job has no
+    # temperature schedule to break, so any checkpoint step is resumable.
     COOLING_STEPS = 2500000
-    in_cooling = step_number < COOLING_STEPS
+    in_cooling = cooling_protocol and step_number < COOLING_STEPS
 
     if in_cooling:
         logger.warning(

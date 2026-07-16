@@ -159,6 +159,42 @@ class TestNAMDRestartAdapter:
         assert result is not None
         assert "1240000" in result.description, "Should use live triplet, not .old"
 
+    def test_prepare_restart_picks_furthest_triplet(self, tmp_path):
+        """Multiple live triplets (e.g. after a prior recovery) — resume from
+        the highest step number, not the alphabetically-first stem."""
+        # Alphabetically-first stem, but older checkpoint
+        (tmp_path / "npt_equil.restart.xsc").write_text(
+            "# NAMD xsc\n#$LABELS step\n1240000 99 0 0 0 99 0 0 0 99 49.5 49.5 49.5\n"
+        )
+        (tmp_path / "npt_equil.restart.coor").write_bytes(b"\x00" * 100)
+        (tmp_path / "npt_equil.restart.vel").write_bytes(b"\x00" * 100)
+        # Later stem alphabetically, further along — written by the restarted run
+        (tmp_path / "simulation.restart.xsc").write_text(
+            "# NAMD xsc\n#$LABELS step\n1500000 99 0 0 0 99 0 0 0 99 49.5 49.5 49.5\n"
+        )
+        (tmp_path / "simulation.restart.coor").write_bytes(b"\x00" * 100)
+        (tmp_path / "simulation.restart.vel").write_bytes(b"\x00" * 100)
+
+        a = NAMDRestartAdapter()
+        result = a.prepare_restart("namd3 +p8 npt_equilibration_453K.namd", tmp_path, "job_1")
+        assert result is not None
+        assert "1500000" in result.description, "Should resume the furthest checkpoint"
+
+    def test_prepare_restart_cooling_protocol_restarts_from_scratch(self, tmp_path):
+        """The campaign cooling+production protocol can't resume mid-cooling —
+        a checkpoint below the 2.5M-step cooling schedule must return None."""
+        (tmp_path / "simulation.restart.xsc").write_text(
+            "# NAMD xsc\n#$LABELS step\n1240000 72.95 0 0 0 72.95 0 0 0 72.95 36 36 36\n"
+        )
+        (tmp_path / "simulation.restart.coor").write_bytes(b"\x00" * 100)
+        (tmp_path / "simulation.restart.vel").write_bytes(b"\x00" * 100)
+
+        a = NAMDRestartAdapter()
+        result = a.prepare_restart(
+            "namd3 +p8 +devices 0 cooling_production_453K.namd", tmp_path, "job_1"
+        )
+        assert result is None, "Mid-cooling checkpoint must fall back to fresh start"
+
 
 # =============================================================================
 # GROMACSRestartAdapter
