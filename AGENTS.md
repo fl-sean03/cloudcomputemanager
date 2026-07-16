@@ -16,12 +16,15 @@
 **Version**: 0.2.0-dev (Sprint Phases 1-4 COMPLETE + Resilience Hardening + Restart Adapters)
 **Tests**: 390 unit tests passing (76 adapter + 314 existing), real Vast.ai e2e preemption recovery validated
   *(2026-07-09 correction: the default run — `pytest tests/ --ignore=tests/test_e2e_full_lifecycle.py --ignore=tests/test_integration_vast.py` — now collects 449 tests; measured result: 445 passed, 4 failed in 7.04s (2 in `tests/test_dashboard.py::TestDashboardRoutes`, 2 in `tests/test_restart_adapters.py::TestNAMDRestartAdapter` — see `docs/audits/2026-07-09-full-audit.md` in the parent workspace). Run via a fresh `pip install -e ".[dev]"` venv on Python 3.12.3; no persistent Python env for CCM exists on this machine — create a venv per CLAUDE.md to run the suite.)*
+  *(2026-07-16 update: the 2 NAMD adapter failures are fixed on main (`51fb6ad`, owner-directed) — the cooling-phase gate was campaign-specific logic applied to all NAMD jobs; it is now scoped to cooling-protocol commands, the generated config references the discovered checkpoint files, and multi-triplet dirs resume from the furthest checkpoint. Suite now collects 451: 449 passed, 2 failed — only the pre-existing dashboard/Starlette drift remains (test-side: `[r.path for r in app.routes]` hits `_IncludedRouter` without `.path`).)*
 **LOC**: ~16,000 source + ~6,500 tests
 **Provider**: Vast.ai (via CLI + SSH subprocess)
 
 ### Parked work (2026-07-09)
 
 Branch `parked/uncommitted-2026-04` holds a single closeout commit (`4cec574`) capturing ~2026-04 uncommitted WIP: +257/−68 across `checkpoint/namd_restart.py`, `daemon/monitor.py`, `providers/vast.py`, `cli/jobs.py`, `providers/base.py`, plus a log file. It is **unreviewed and unmerged by design** — the owner (Sean) adjudicates it. Do not merge it, rebase it, or build on it.
+
+*(2026-07-16: main's NAMD fix `51fb6ad` touches the same region of `namd_restart.py` the parked branch rewrites — a future merge WILL conflict there, intentionally forcing conscious adjudication. The branches differ in approach: main scopes the cooling gate to campaign jobs and keeps mid-cooling restart-from-scratch; the parked WIP instead reconstructs the remaining 1000→453 K cooling schedule (reassignTemp ramps) so mid-cooling checkpoints resume — that reconstruction is scientifically load-bearing and remains unreviewed. The parked branch's other files (monitor.py +95, vast.py, jobs.py, base.py) are untouched by main's fix.)*
 
 ### Sprint Status
 
